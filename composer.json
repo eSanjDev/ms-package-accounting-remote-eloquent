@@ -1,0 +1,52 @@
+{
+    "name": "esanj/remote-eloquent",
+    "description": "A Laravel package that extends Eloquent ORM to work with remote APIs (REST and gRPC)",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "laravel",
+        "eloquent",
+        "api",
+        "rest",
+        "grpc",
+        "remote",
+        "orm"
+    ],
+
+    "require": {
+        "php": "^8.0",
+        "laravel/framework": "^9.0|^10.0|^11.0",
+        "guzzlehttp/guzzle": "^7.0",
+        "illuminate/support": "^9.0|^10.0|^11.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.0|^10.0",
+        "orchestra/testbench": "^7.0|^8.0"
+    },
+    "suggest": {
+        "grpc/grpc": "Required for gRPC support",
+        "google/protobuf": "Required for gRPC support"
+    },
+    "autoload": {
+        "psr-4": {
+            "Esanj\\RemoteEloquent\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Esanj\\RemoteEloquent\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Esanj\\RemoteEloquent\\Providers\\RemoteEloquentServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+} 
