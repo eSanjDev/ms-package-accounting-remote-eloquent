@@ -196,14 +196,12 @@ class ApiQueryBuilder extends Builder
         return intval($response[0]['count'] ?? 0);
     }
 
-    public function sum($column)
+    public function sum($column): int
     {
-        $queryParams = $this->buildRemoteQueryParams(['aggregate' => 'sum', 'column' => $column]);
-        $endpoint = $this->getModel()->getTable();
+        $sql = 'SELECT SUM(' . $column . ') as sum FROM ' . $this->getModel()->getTable();
+        $response = $this->getApiClient()->run($sql);
 
-        $response = $this->getApiClient()->run($endpoint, $queryParams);
-
-        return $response['sum'] ?? 0;
+        return (int)$response[0]['sum'] ?? 0;
     }
 
     public function avg($column)
