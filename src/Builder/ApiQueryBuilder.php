@@ -187,15 +187,13 @@ class ApiQueryBuilder extends Builder
         return $this;
     }
 
-    public function count($columns = '*')
+    public function count($columns = '*'): int
     {
-        $queryParams = $this->buildRemoteQueryParams(['aggregate' => 'count', 'column' => $columns]);
+        $sql = 'SELECT COUNT(*) as count FROM ' . $this->getModel()->getTable();
 
-        $endpoint = $this->getModel()->getTable() . '/aggregate';
+        $response = $this->getApiClient()->run($sql);
 
-        $response = $this->getApiClient()->run($endpoint, $queryParams);
-
-        return intval($response['count'] ?? 0);
+        return intval($response[0]['count'] ?? 0);
     }
 
     public function sum($column)
