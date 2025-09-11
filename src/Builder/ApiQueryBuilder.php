@@ -204,34 +204,11 @@ class ApiQueryBuilder extends Builder
         return (int)$response[0]['sum'] ?? 0;
     }
 
-    public function avg($column)
+    public function avg($column): int
     {
-        $queryParams = $this->buildRemoteQueryParams(['aggregate' => 'avg', 'column' => $column]);
-        $response = $this->getApiClient()->run($this->getModel()->getTable(), $queryParams);
+        $sql = 'SELECT AVG(' . $column . ') as avg FROM ' . $this->getModel()->getTable();
+        $response = $this->getApiClient()->run($sql);
 
-        return $response['avg'] ?? 0;
-    }
-
-    public function latest($column = 'created_at'): ApiQueryBuilder|static
-    {
-        return $this->orderBy($column, 'desc');
-    }
-
-    public function orderBy($column, $direction = 'asc'): ApiQueryBuilder|static
-    {
-        $dir = strtolower($direction) === 'desc' ? '-' : '';
-
-        if (isset($this->remoteConditions['sort'])) {
-            $this->remoteConditions['sort'] .= ',' . ($dir === 'desc' ? '-' : '') . $column;
-        } else {
-            $this->remoteConditions['sort'] = ($dir === 'desc' ? '-' : '') . $column;
-        }
-
-        return $this;
-    }
-
-    public function oldest($column = 'created_at'): ApiQueryBuilder|static
-    {
-        return $this->orderBy($column, 'asc');
+        return (int)$response[0]['avg'] ?? 0;
     }
 }
