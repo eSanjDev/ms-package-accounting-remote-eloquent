@@ -10,7 +10,7 @@ return [
     | client type is set on the model.
     |
     */
-    'default_client' => env('REMOTE_ELOQUENT_DEFAULT_CLIENT', 'rest'),
+    'default_client' => env('REMOTE_ELOQUENT_DEFAULT_CLIENT', 'grpc'),
 
     /*
     |--------------------------------------------------------------------------
@@ -21,7 +21,6 @@ return [
     |
     */
     'rest' => [
-        'base_url' => env('REMOTE_ELOQUENT_REST_BASE_URL', ''),
         'headers' => [
             'Content-Type' => 'application/json',
             'Accept' => 'application/json',
@@ -39,8 +38,6 @@ return [
     |
     */
     'grpc' => [
-        'server_address' => env('REMOTE_ELOQUENT_GRPC_SERVER_ADDRESS', 'localhost:50051'),
-        'service_name' => env('REMOTE_ELOQUENT_GRPC_SERVICE_NAME', ''),
         'credentials' => [
             'type' => env('REMOTE_ELOQUENT_GRPC_CREDENTIALS_TYPE', 'insecure'),
             'cert_path' => env('REMOTE_ELOQUENT_GRPC_CERT_PATH', ''),
@@ -61,4 +58,4 @@ return [
         'channel' => env('REMOTE_ELOQUENT_LOGGING_CHANNEL', 'stack'),
         'level' => env('REMOTE_ELOQUENT_LOGGING_LEVEL', 'info'),
     ],
-]; 
+];

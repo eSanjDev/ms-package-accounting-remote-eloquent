@@ -3,10 +3,7 @@
 namespace Esanj\RemoteEloquent\Providers;
 
 use Esanj\RemoteEloquent\Contracts\GrpcClientInterface;
-use Esanj\RemoteEloquent\Contracts\RestClientInterface;
-use Esanj\RemoteEloquent\Services\ApiOAuth2Client;
 use Esanj\RemoteEloquent\Services\GrpcClient;
-use Esanj\RemoteEloquent\Services\RestClient;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -23,30 +20,13 @@ class RemoteEloquentServiceProvider extends ServiceProvider
             __DIR__ . '/../config/remote-eloquent.php', 'remote-eloquent'
         );
 
-        // Register REST client
-        $this->app->bind(RestClientInterface::class, function ($app) {
-            $config = config('remote-eloquent.rest', []);
-
-            if (isset($config['oauth']) && $config['oauth']) {
-                return new ApiOAuth2Client();
-            }
-
-            return new RestClient(
-                $config['base_url'] ?? '',
-                $config['headers'] ?? []
-            );
-        });
-
         // Register gRPC client
         $this->app->bind(GrpcClientInterface::class, function ($app) {
             $config = config('remote-eloquent.grpc', []);
 
-            $client = new GrpcClient(
+            return new GrpcClient(
                 $config['server_address'] ?? 'localhost:50051',
-                $config['service_name'] ?? ''
             );
-
-            return $client;
         });
     }
 

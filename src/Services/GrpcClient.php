@@ -4,24 +4,22 @@ namespace Esanj\RemoteEloquent\Services;
 
 use Esanj\RemoteEloquent\Contracts\GrpcClientInterface;
 use Esanj\RemoteEloquent\Exceptions\GrpcClientException;
+use Esanj\RemoteEloquent\Services\GRPC\QueryRequest;
+use Esanj\RemoteEloquent\Services\GRPC\QueryResponse;
+use Esanj\RemoteEloquent\Services\GRPC\RemoteEloquentServiceClient;
 use Exception;
-use Google\Protobuf\Internal\Message;
 use Grpc\ChannelCredentials;
+use const Grpc\STATUS_OK;
 
 /**
  * gRPC client implementation for RemoteEloquent
  */
 class GrpcClient implements GrpcClientInterface
 {
-    protected string $serverAddress;
-    protected string $serviceName;
     protected $channel;
-    protected array $stubs = [];
 
-    public function __construct(string $serverAddress = '', string $serviceName = '')
+    public function __construct(protected string $serverAddress)
     {
-        $this->serverAddress = $serverAddress;
-        $this->serviceName = $serviceName;
         $this->initializeChannel();
     }
 
@@ -30,41 +28,18 @@ class GrpcClient implements GrpcClientInterface
      */
     protected function initializeChannel(): void
     {
-        $this->channel = new \Grpc\Channel(
-            $this->serverAddress,
-            ['credentials' => ChannelCredentials::createInsecure()]
-        );
-    }
-
-    /**
-     * Get or create gRPC stub for the service
-     */
-    protected function getStub(string $method): object
-    {
-        if (!isset($this->stubs[$method])) {
-            $stubClass = "\\{$this->serviceName}\\{$method}Stub";
-            $this->stubs[$method] = new $stubClass($this->serverAddress, [
-                'credentials' => ChannelCredentials::createInsecure(),
-            ]);
-        }
-
-        return $this->stubs[$method];
+        $this->channel = new RemoteEloquentServiceClient($this->getServerAddress(), [
+            'credentials' => ChannelCredentials::createInsecure(),
+        ]);
     }
 
     /**
      * Convert Eloquent query to gRPC request
      */
-    protected function buildGrpcRequest(string $method, array $data = []): Message
+    protected function buildGrpcRequest(string $sql = null): QueryRequest
     {
-        $requestClass = "\\{$this->serviceName}\\{$method}Request";
-        $request = new $requestClass();
-
-        foreach ($data as $key => $value) {
-            $setter = 'set' . ucfirst($key);
-            if (method_exists($request, $setter)) {
-                $request->$setter($value);
-            }
-        }
+        $request = new QueryRequest();
+        $request->setSql($sql);
 
         return $request;
     }
@@ -74,7 +49,7 @@ class GrpcClient implements GrpcClientInterface
      */
     protected function grpcResponseToArray($response): array
     {
-        if ($response instanceof Message) {
+        if ($response instanceof QueryResponse) {
             return $this->messageToArray($response);
         }
 
@@ -84,120 +59,46 @@ class GrpcClient implements GrpcClientInterface
     /**
      * Convert protobuf message to array
      */
-    protected function messageToArray(Message $message): array
+    protected function messageToArray(QueryResponse $response): array
     {
         $data = [];
-        $reflection = new \ReflectionClass($message);
-        
-        foreach ($reflection->getProperties() as $property) {
-            $property->setAccessible(true);
-            $value = $property->getValue($message);
+
+        foreach ($response->getRows() as $item) {
+
+            $value = $item->getFields();
 
             if ($value !== null) {
-                $data[$property->getName()] = $value;
+
+                $data[] = collect($value)->toArray();
             }
         }
 
         return $data;
     }
 
-    public function get(string $url, array $query = []): array
+    public function run(string $query = null): array
     {
         try {
-            $stub = $this->getStub('Get');
-            $request = $this->buildGrpcRequest('Get', $query);
+            $request = $this->buildGrpcRequest($query);
 
-            list($response, $status) = $stub->Get($request)->wait();
+            list($response, $status) = $this->channel->RunQuery($request)->wait();
 
-            if ($status->code !== \Grpc\STATUS_OK) {
+            if ($status->code !== STATUS_OK) {
                 throw new GrpcClientException("gRPC call failed: " . $status->details);
             }
-
             return $this->grpcResponseToArray($response);
         } catch (Exception $e) {
-            throw new GrpcClientException("gRPC GET request failed: " . $e->getMessage());
+            throw new GrpcClientException("gRPC request failed: " . $e->getMessage());
         }
-    }
-
-    public function post(string $url, array $data = []): array
-    {
-        try {
-            $stub = $this->getStub('Create');
-            $request = $this->buildGrpcRequest('Create', $data);
-
-            list($response, $status) = $stub->Create($request)->wait();
-
-            if ($status->code !== \Grpc\STATUS_OK) {
-                throw new GrpcClientException("gRPC call failed: " . $status->details);
-            }
-
-            return $this->grpcResponseToArray($response);
-        } catch (Exception $e) {
-            throw new GrpcClientException("gRPC POST request failed: " . $e->getMessage());
-        }
-    }
-
-    public function put(string $url, array $data = []): array
-    {
-        try {
-            $stub = $this->getStub('Update');
-            $request = $this->buildGrpcRequest('Update', $data);
-
-            list($response, $status) = $stub->Update($request)->wait();
-
-            if ($status->code !== \Grpc\STATUS_OK) {
-                throw new GrpcClientException("gRPC call failed: " . $status->details);
-            }
-
-            return $this->grpcResponseToArray($response);
-        } catch (Exception $e) {
-            throw new GrpcClientException("gRPC PUT request failed: " . $e->getMessage());
-        }
-    }
-
-    public function delete(string $url): void
-    {
-        try {
-            $stub = $this->getStub('Delete');
-            $request = $this->buildGrpcRequest('Delete', ['id' => $this->extractIdFromUrl($url)]);
-
-            list($response, $status) = $stub->Delete($request)->wait();
-
-            if ($status->code !== \Grpc\STATUS_OK) {
-                throw new GrpcClientException("gRPC call failed: " . $status->details);
-            }
-        } catch (Exception $e) {
-            throw new GrpcClientException("gRPC DELETE request failed: " . $e->getMessage());
-        }
-    }
-
-    /**
-     * Extract ID from URL for delete operations
-     */
-    protected function extractIdFromUrl(string $url): string
-    {
-        $parts = explode('/', trim($url, '/'));
-        return end($parts);
     }
 
     public function setServerAddress(string $address): void
     {
         $this->serverAddress = $address;
-        $this->initializeChannel();
     }
 
     public function getServerAddress(): string
     {
         return $this->serverAddress;
     }
-
-    public function setServiceName(string $serviceName): void
-    {
-        $this->serviceName = $serviceName;
-    }
-
-    public function getServiceName(): string
-    {
-        return $this->serviceName;
-    }
-} 
+}

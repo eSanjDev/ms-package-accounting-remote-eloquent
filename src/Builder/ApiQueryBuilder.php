@@ -18,24 +18,9 @@ class ApiQueryBuilder extends Builder
      */
     protected array $remoteConditions = [];
 
-    public function insertRemote(array $attributes)
-    {
-        return $this->model->getApiClient()->post($this->getEndpoint(), $attributes);
-    }
-
     public function getApiClient(): ClientInterface
     {
         return $this->model->getApiClient();
-    }
-
-    protected function getEndpoint(): string
-    {
-        return '/' . str($this->model->getTable())->plural()->snake();
-    }
-
-    public function updateRemote($id, array $attributes)
-    {
-        return $this->model->getApiClient()->put($this->getEndpoint() . '/' . $id, $attributes);
     }
 
     /**
@@ -78,21 +63,19 @@ class ApiQueryBuilder extends Builder
      */
     public function find($id, $columns = ['*'])
     {
-        // We can either call the remote API with path /{id}
-        // or rely on the get() approach. Let's do direct approach here.
-
         $model = $this->getModel();
-        $endpoint = $model->getTable() . '/' . $id;
 
         $client = $this->getApiClient();
-        $response = $client->get($endpoint);
 
-        if (!is_array($response)) {
+        $sql = $this->toSql() . " WHERE " . $model->getKeyName() . "=" . $id;
+        $response = $client->run($sql);
+
+        if (!is_array($response) || empty($response)) {
             return null;
         }
 
         // Build the model instance
-        $item = $model->newFromBuilder($response);
+        $item = $model->newFromBuilder($response[0] ?? []);
         $item->exists = true;
         return $item;
     }
@@ -103,16 +86,12 @@ class ApiQueryBuilder extends Builder
      */
     public function get($columns = ['*'])
     {
-        // Build the query parameters
-        $queryParams = $this->buildRemoteQueryParams();
-
         // Get the model to figure out the "table" or resource endpoint
         $model = $this->getModel();
-        $endpoint = $model->getTable();
 
         // Use the assigned client to fetch data
         $client = $this->getApiClient();
-        $response = $client->get($endpoint, $queryParams);
+        $response = $client->run($this->toRawSql());
 
         if (!is_array($response)) {
             // If the response is not a valid array, handle the error or return an empty collection
@@ -177,35 +156,6 @@ class ApiQueryBuilder extends Builder
         return $query;
     }
 
-    protected function getQueryParameters(): array
-    {
-        // TO-DO: building filters, sorting, eager loads etc.
-        return $this->query->wheres;
-    }
-
-//    public function whereHas($relation, Closure $callback = null): ApiQueryBuilder|static
-//    {
-//        $relationQuery = new self($this->getModel()->{$relation}()->getQuery());
-//        $callback($relationQuery = new static($this->getQuery()));
-//
-//        $conditions = $relation . ':' . http_build_query($relationConditions);
-//        $this->remoteConditions[] = $conditions;
-//
-//        return $this;
-//    }
-
-    public function with($relations, $callback = null)
-    {
-        if (is_string($relations)) {
-            $relations = explode(',', $relations);
-        } elseif (is_array($relations = $this->parseWithRelations((array)$relations))) {
-            foreach ($relations as $relation => $constraint) {
-                $this->with[] = $relation;
-            }
-            return parent::with($relations);
-        }
-    }
-
     public function paginate($perPage = 15, $columns = ['*'], $pageName = 'page', $page = null, $total = null): LengthAwarePaginator
     {
         $page = $page ?: request()->input('page', 1);
@@ -215,7 +165,7 @@ class ApiQueryBuilder extends Builder
         $queryParams['per_page'] = $perPage;
 
         $endpoint = $this->getModel()->getTable();
-        $response = $this->getApiClient()->get($endpoint, $queryParams);
+        $response = $this->getApiClient()->run($endpoint, $queryParams);
 
         $items = $this->hydrate($response['data']);
         return new LengthAwarePaginator($items, $response['total'], $perPage, $page);
@@ -243,7 +193,7 @@ class ApiQueryBuilder extends Builder
 
         $endpoint = $this->getModel()->getTable() . '/aggregate';
 
-        $response = $this->getApiClient()->get($endpoint, $queryParams);
+        $response = $this->getApiClient()->run($endpoint, $queryParams);
 
         return intval($response['count'] ?? 0);
     }
@@ -253,7 +203,7 @@ class ApiQueryBuilder extends Builder
         $queryParams = $this->buildRemoteQueryParams(['aggregate' => 'sum', 'column' => $column]);
         $endpoint = $this->getModel()->getTable();
 
-        $response = $this->getApiClient()->get($endpoint, $queryParams);
+        $response = $this->getApiClient()->run($endpoint, $queryParams);
 
         return $response['sum'] ?? 0;
     }
@@ -261,7 +211,7 @@ class ApiQueryBuilder extends Builder
     public function avg($column)
     {
         $queryParams = $this->buildRemoteQueryParams(['aggregate' => 'avg', 'column' => $column]);
-        $response = $this->getApiClient()->get($this->getModel()->getTable(), $queryParams);
+        $response = $this->getApiClient()->run($this->getModel()->getTable(), $queryParams);
 
         return $response['avg'] ?? 0;
     }

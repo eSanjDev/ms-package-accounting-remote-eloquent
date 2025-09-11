@@ -16,14 +16,4 @@ interface GrpcClientInterface extends ClientInterface
      * Get gRPC server address
      */
     public function getServerAddress(): string;
-
-    /**
-     * Set gRPC service name
-     */
-    public function setServiceName(string $serviceName): void;
-
-    /**
-     * Get gRPC service name
-     */
-    public function getServiceName(): string;
-} 
+}
