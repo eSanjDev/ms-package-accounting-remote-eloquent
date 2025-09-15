@@ -17,12 +17,12 @@ class RemoteEloquentServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(
-            __DIR__ . '/../config/remote-eloquent.php', 'remote-eloquent'
+            __DIR__ . '/../config/remote-eloquent.php', 'esanj.remote-eloquent'
         );
 
         // Register gRPC client
         $this->app->bind(GrpcClientInterface::class, function ($app) {
-            $config = config('remote-eloquent.grpc', []);
+            $config = config('esanj.remote-eloquent.grpc', []);
 
             return new GrpcClient(
                 $config['server_address'] ?? 'localhost:50051',
@@ -37,7 +37,7 @@ class RemoteEloquentServiceProvider extends ServiceProvider
     {
         // Publish configuration file
         $this->publishes([
-            __DIR__ . '/../config/remote-eloquent.php' => config_path('remote-eloquent.php'),
-        ], 'remote-eloquent-config');
+            __DIR__ . '/../config/remote-eloquent.php' => config_path('esanj/remote-eloquent.php'),
+        ], 'esanj.remote-eloquent-config');
     }
 }
