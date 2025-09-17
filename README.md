@@ -1,18 +1,21 @@
 # RemoteEloquent
 
-A Laravel package that extends the Eloquent ORM to seamlessly interact with remote APIs (REST and gRPC) as if they were local databases.
+A Laravel package that extends the Eloquent ORM to seamlessly interact with remote APIs (REST and gRPC) as if they were
+local databases.
 
 ## Features
+
 - **REST & gRPC Support:** Use Eloquent models to communicate with remote RESTful or gRPC APIs.
 - **Familiar Eloquent Syntax:** Continue using Eloquent's expressive syntax for remote data sources.
 - **Easy Integration:** Plug-and-play with Laravel 9, 10, and 11.
 - **Extensible & Configurable:** Easily customize endpoints, authentication, and serialization.
 
 ## Requirements
+
 - PHP >= 8.0
-- Laravel 9.x, 10.x, or 11.x
+- Laravel 9.x, 10.x, or 11.x, or 12.x
 - guzzlehttp/guzzle ^7.0
-- illuminate/support ^9.0|^10.0|^11.0
+- illuminate/support ^9.0|^10.0|^11.0|^12.x
 
 ## Installation
 
@@ -28,7 +31,8 @@ Publish the package configuration (if available):
 php artisan vendor:publish --provider="Esanj\\RemoteEloquent\\Providers\\RemoteEloquentServiceProvider"
 ```
 
-Edit the configuration file in `config/remote-eloquent.php` to set your API endpoints, authentication, and other options.
+Edit the configuration file in `config/remote-eloquent.php` to set your API endpoints, authentication, and other
+options.
 
 ## Usage
 
@@ -41,8 +45,9 @@ use Esanj\RemoteEloquent\RemoteModel;
 
 class UserModel extends RemoteModel
 {
-    // Define table, fillable, etc.
-    protected $fillable = ['first_name', 'last_name', 'age'];
+     public string $address = '127.0.0.1:50051';
+     
+     protected string $clientType = 'grpc';
 }
 ```
 
