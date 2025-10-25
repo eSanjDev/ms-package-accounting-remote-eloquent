@@ -59,8 +59,27 @@ $users = UserModel::where('is_active',1)->where('age', '>', 10)->paginate();
 
 // Find a user by ID
 $user = UserModel::find(1);
-
 ```
+
+## 🧩 Supported Methods
+
+`RemoteEloquent` supports commonly used Eloquent query builder methods for interacting with remote gRPC APIs.
+
+| Method | Description |
+|:--------|:-------------|
+| `where` | Apply a basic “where” condition to the query. |
+| `whereIn` | Filter results where a column’s value is within a given array of values. |
+| `whereBetween` | Filter results between two values for a specific column. |
+| `find` | Retrieve a model by its primary key. |
+| `findOrFail` | Retrieve a model by its primary key or throw an exception if not found. |
+| `get` | Execute the query and return all matching records as a collection. |
+| `paginate` | Retrieve paginated results from the remote API. |
+| `count` | Retrieve the total number of matching records. |
+| `avg` | Calculate the average of a given column. |
+| `sum` | Calculate the sum of a given column. |
+
+> 🔧 *More Eloquent query methods are planned for future releases.*
+
 
 ## License
 
