@@ -49,8 +49,8 @@ Your job is small: **extend `RemoteModel`, set the table, declare casts.** Every
 - PHP 8.2+, Laravel 11–13.
 - The Accounting service reachable over REST (a base URL) and/or gRPC (`host:port`).
 - An OAuth **client id + secret** issued by Accounting (the same pair `esanj/auth-bridge` uses is fine).
-- **Only if you choose gRPC:** `ext-grpc`, the `grpc/grpc` composer package, and generated protobuf classes
-  (section 8). REST needs none of these.
+- **Only if you choose gRPC:** `ext-grpc`, plus the `grpc/grpc` and `google/protobuf` composer packages (the
+  message classes ship with this package — section 8). REST needs none of these.
 
 ---
 
@@ -194,29 +194,56 @@ Nothing to install. It POSTs to `{REMOTE_ELOQUENT_BASE_URL}/api/application/quer
 
 ### gRPC
 
-Faster and lighter on the wire, but it needs a little setup because PHP gRPC clients rely on generated code:
+Faster and lighter on the wire. The protobuf message classes **ship with the package**, so there is no `protoc`
+step:
 
 1. **Install the stack** in the consuming service:
    ```bash
    pecl install grpc          # or enable ext-grpc in php.ini
    composer require grpc/grpc google/protobuf
    ```
-2. **Generate the message classes** from the shipped proto (same file the server uses):
-   ```bash
-   protoc --php_out=app/Grpc proto/eloquent.proto
-   ```
-   (Inside the Accounting monorepo the classes already exist as `App\Services\Grpc\Eloquent\QueryRequest` /
-   `QueryResponse`, so you can point straight at those.)
-3. **Configure**:
+2. **Configure** — the host is all you need; `request_class`/`response_class` already default to the shipped
+   `Esanj\RemoteEloquent\Grpc\QueryRequest` / `QueryResponse`:
    ```env
    REMOTE_ELOQUENT_DRIVER=grpc
    REMOTE_ELOQUENT_GRPC_HOST=accounting.example.com:50051
-   REMOTE_ELOQUENT_GRPC_REQUEST="App\Grpc\Eloquent\QueryRequest"
-   REMOTE_ELOQUENT_GRPC_RESPONSE="App\Grpc\Eloquent\QueryResponse"
    ```
+   Only set `REMOTE_ELOQUENT_GRPC_REQUEST` / `REMOTE_ELOQUENT_GRPC_RESPONSE` if you want to point at your own
+   generated classes instead of the shipped ones.
 
 If gRPC isn't fully wired, the transport fails **loudly and catchably** with a message telling you exactly what's
 missing (`ext-grpc`, `grpc/grpc`, or a message class) — it never silently falls back.
+
+### Per-model transport override
+
+`REMOTE_ELOQUENT_DRIVER` is the default for **every** model. To make one model use a different transport, set
+`$transport` on it:
+
+```php
+class Ledger extends RemoteModel
+{
+    protected $table = 'ledgers';
+    protected $transport = 'grpc';   // always gRPC, even when the default is rest
+}
+```
+
+- Accepted values: `'rest'` and `'grpc'`. Any other value throws `InvalidArgumentException` (with the offending
+  model and value) as soon as the model resolves its connection.
+- Each transport gets its own auto-registered connection — `remote` (default), `remote_rest`, `remote_grpc` — so a
+  gRPC model and a REST model never share a connection, cached token pipe, or transport instance.
+- Need to decide at runtime (e.g. per environment or feature flag)? Override the method form instead:
+
+  ```php
+  public function getTransportName(): ?string
+  {
+      return app()->environment('production') ? 'grpc' : 'rest';
+  }
+  ```
+
+  Return `null` to fall back to the configured default.
+
+An explicit `$connection` on the model still takes precedence over `$transport` (for advanced multi-endpoint
+setups where you register your own connections).
 
 ---
 
@@ -339,8 +366,8 @@ it into single-table queries.
 Declare `$casts` on the model.
 
 **`TransportException: The gRPC transport is unavailable ...`.**
-Install `ext-grpc` + `grpc/grpc`, generate the message classes, and set `REMOTE_ELOQUENT_GRPC_REQUEST` /
-`REMOTE_ELOQUENT_GRPC_RESPONSE`. Or switch back to `REMOTE_ELOQUENT_DRIVER=rest`.
+Install `ext-grpc` + `grpc/grpc` + `google/protobuf` (the message classes ship with the package, so no `protoc`
+step is needed). Or switch back to `REMOTE_ELOQUENT_DRIVER=rest`.
 
 **`TokenRequestException: client credentials are not configured`.**
 Set `REMOTE_ELOQUENT_CLIENT_ID` / `REMOTE_ELOQUENT_CLIENT_SECRET` (or the `ACCOUNTING_BRIDGE_*` equivalents), then
@@ -386,7 +413,8 @@ User::where('id', 7)->delete();
 |---|---|
 | Make a table remote | `class X extends RemoteModel { protected $table = '...'; }` |
 | Fix string/date types | declare `$casts` |
-| Use gRPC | `REMOTE_ELOQUENT_DRIVER=grpc` + install ext-grpc/grpc + generate classes |
+| Use gRPC | `REMOTE_ELOQUENT_DRIVER=grpc` + install ext-grpc/grpc/protobuf (classes ship with the package) |
+| Pin one model to a transport | `protected $transport = 'grpc';` (or `'rest'`) on that model |
 | Run raw SQL | `RemoteQuery::select()` / `::affectingStatement()` |
 | Force re-auth | `RemoteQuery::forgetToken()` |
 | Combine tables | run separate single-table queries, join in PHP |

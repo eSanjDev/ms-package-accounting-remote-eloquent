@@ -10,9 +10,13 @@ return [
     |--------------------------------------------------------------------------
     |
     | How compiled SQL travels to the Accounting service: "rest" (turnkey, no
-    | extra dependencies) or "grpc" (needs ext-grpc, grpc/grpc and generated
-    | protobuf classes — see docs/GUIDE.md). Both speak the same
-    | {sql, bindings} -> {rows, affected_rows} contract.
+    | extra dependencies) or "grpc" (needs ext-grpc + grpc/grpc + google/protobuf
+    | — see docs/GUIDE.md). Both speak the same {sql, bindings} ->
+    | {rows, affected_rows} contract.
+    |
+    | This is the default for every RemoteModel. An individual model may pin
+    | itself to a specific transport with `protected $transport = 'grpc';`
+    | (or 'rest'), independent of this default — see docs/GUIDE.md.
     |
     */
 
@@ -95,9 +99,11 @@ return [
     | gRPC transport
     |--------------------------------------------------------------------------
     |
-    | Used when driver=grpc. "request_class"/"response_class" are the FQCNs you
-    | generated from proto/eloquent.proto (the shipped proto uses the
-    | App\Services\Grpc\Eloquent namespace). "timeout" is in seconds (0 = none).
+    | Used when driver=grpc. "request_class"/"response_class" default to the
+    | protobuf message classes shipped with this package (namespace
+    | Esanj\RemoteEloquent\Grpc) — no code generation is required, just install
+    | ext-grpc + grpc/grpc + google/protobuf. Override them only to point at your
+    | own generated classes. "timeout" is in seconds (0 = none).
     |
     */
 
@@ -106,8 +112,8 @@ return [
         'secure' => (bool) env('REMOTE_ELOQUENT_GRPC_SECURE', false),
         'timeout' => (int) env('REMOTE_ELOQUENT_GRPC_TIMEOUT', 0),
         'metadata_key' => env('REMOTE_ELOQUENT_GRPC_METADATA_KEY', 'authorization'),
-        'request_class' => env('REMOTE_ELOQUENT_GRPC_REQUEST', 'App\Services\Grpc\Eloquent\QueryRequest'),
-        'response_class' => env('REMOTE_ELOQUENT_GRPC_RESPONSE', 'App\Services\Grpc\Eloquent\QueryResponse'),
+        'request_class' => env('REMOTE_ELOQUENT_GRPC_REQUEST', 'Esanj\RemoteEloquent\Grpc\QueryRequest'),
+        'response_class' => env('REMOTE_ELOQUENT_GRPC_RESPONSE', 'Esanj\RemoteEloquent\Grpc\QueryResponse'),
     ],
 
 ];

@@ -45,7 +45,8 @@ read/write surface keeps working**: `where`, `whereIn`, `orderBy`, `limit`/`offs
 ## Features
 
 - **Drop-in Eloquent** — extend `RemoteModel`; keep writing normal Eloquent.
-- **Two transports, one contract** — `rest` (turnkey, zero extra deps) or `grpc`. Switch with one env var.
+- **Two transports, one contract** — `rest` (turnkey, zero extra deps) or `grpc`. Switch the default with one env
+  var, or pin an individual model to a transport with `protected $transport = 'grpc';`.
 - **Automatic token caching** — an OAuth client-credentials token is fetched once, cached, and transparently
   refreshed shortly before it expires (via the refresh-token grant when available, otherwise re-requested).
 - **Server-enforced authorization** — every statement is gated on the Accounting side by the calling
@@ -58,8 +59,8 @@ read/write surface keeps working**: `where`, `whereIn`, `orderBy`, `limit`/`offs
 
 - PHP **8.2+**, Laravel **11 – 13** (tested on 13).
 - Reachable Accounting service (REST base URL and/or gRPC endpoint) plus an OAuth **client id/secret** issued by it.
-- **gRPC only:** the `ext-grpc` PHP extension, the `grpc/grpc` composer package, and protobuf message classes
-  generated from `proto/eloquent.proto`. REST needs none of this.
+- **gRPC only:** the `ext-grpc` PHP extension plus the `grpc/grpc` and `google/protobuf` composer packages. The
+  protobuf message classes ship with this package — no code generation needed. REST needs none of this.
 
 ## Installation
 
@@ -93,15 +94,16 @@ REMOTE_ELOQUENT_CLIENT_SECRET=your-client-secret
 REMOTE_ELOQUENT_DRIVER=rest
 ```
 
-For gRPC, also set:
+For gRPC, install the stack (`ext-grpc`, `grpc/grpc`, `google/protobuf`) and set:
 
 ```env
 REMOTE_ELOQUENT_DRIVER=grpc
 REMOTE_ELOQUENT_GRPC_HOST=accounting.example.com:50051
-# FQCNs of the QueryRequest/QueryResponse classes you generated from proto/eloquent.proto
-REMOTE_ELOQUENT_GRPC_REQUEST="App\Services\Grpc\Eloquent\QueryRequest"
-REMOTE_ELOQUENT_GRPC_RESPONSE="App\Services\Grpc\Eloquent\QueryResponse"
 ```
+
+The `QueryRequest`/`QueryResponse` protobuf classes **ship with the package** (namespace
+`Esanj\RemoteEloquent\Grpc`) and are wired as the defaults — you do **not** need to run `protoc`. Only set
+`REMOTE_ELOQUENT_GRPC_REQUEST` / `REMOTE_ELOQUENT_GRPC_RESPONSE` if you want to point at your own generated classes.
 
 See [`src/config/remote_eloquent.php`](src/config/remote_eloquent.php) for every option (timeouts, token cache store &
 buffer, connection name, table prefix, …).
@@ -148,6 +150,23 @@ $user->delete();
 > id, so `create()` cannot echo back a database-generated `id` unless the server is extended to return one. Prefer
 > **client-generated keys** (UUID/ULID via `HasUuids`) for models you create remotely. Reads, updates and deletes
 > are unaffected. See [docs/GUIDE.md](docs/GUIDE.md#writes--the-insert-id-caveat).
+
+### Per-model transport
+
+`REMOTE_ELOQUENT_DRIVER` sets the default transport for every model. To pin a **single** model to a specific
+transport — regardless of that default — declare `$transport`:
+
+```php
+class Ledger extends RemoteModel
+{
+    protected $table = 'ledgers';
+    protected $transport = 'grpc';   // this model always talks gRPC; others use the default
+}
+```
+
+Accepted values are `'rest'` and `'grpc'` (an unknown value throws `InvalidArgumentException`). Under the hood each
+transport has its own auto-registered remote connection (`remote`, `remote_rest`, `remote_grpc`), so models using
+different transports stay fully isolated. For dynamic decisions, override `getTransportName(): ?string` instead.
 
 ### Raw queries (no model)
 
