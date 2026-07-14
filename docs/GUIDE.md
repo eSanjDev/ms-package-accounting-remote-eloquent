@@ -1,0 +1,392 @@
+# 📚 Remote Eloquent — Complete Guide
+
+This guide assumes you have **never used this package**. It explains, step by step, how to make a Laravel service
+read and write the **Accounting** database through plain Eloquent — without a local copy of those tables.
+
+> 💡 **What is this?** Normally an Eloquent model talks to *your* database through PDO. Remote Eloquent swaps that
+> PDO for a network transport: your query is compiled to SQL and sent to the Accounting service (over gRPC or
+> REST), which runs it and sends the rows back. Your models hydrate from those rows exactly as usual.
+
+---
+
+## Table of contents
+
+1. [The big picture](#1-the-big-picture)
+2. [Requirements](#2-requirements)
+3. [Installation](#3-installation)
+4. [Configuration & `.env`](#4-configuration--env)
+5. [Your first remote model](#5-your-first-remote-model)
+6. [Reading data](#6-reading-data)
+7. [Writes & the insert-id caveat](#7-writes--the-insert-id-caveat)
+8. [Choosing a transport: REST vs gRPC](#8-choosing-a-transport-rest-vs-grpc)
+9. [How token caching works](#9-how-token-caching-works)
+10. [Raw queries with the `RemoteQuery` facade](#10-raw-queries-with-the-remotequery-facade)
+11. [What you can and can't query](#11-what-you-can-and-cant-query)
+12. [How authorization works on the server](#12-how-authorization-works-on-the-server)
+13. [Error handling](#13-error-handling)
+14. [Troubleshooting](#14-troubleshooting)
+15. [Cheat sheet](#15-cheat-sheet)
+
+---
+
+## 1. The big picture
+
+```
+Your service                       Remote Eloquent                     Accounting
+   User::find(7)  ------------->  compile to SQL + bindings
+                                  attach cached Bearer token
+                                  send {sql, bindings}  ------------->  check the app owns USER_LIST
+                                                                        run: select * from `users` where id = 7
+                                  hydrate model  <-------------------   return rows (as strings)
+```
+
+Your job is small: **extend `RemoteModel`, set the table, declare casts.** Everything else is normal Eloquent.
+
+---
+
+## 2. Requirements
+
+- PHP 8.2+, Laravel 11–13.
+- The Accounting service reachable over REST (a base URL) and/or gRPC (`host:port`).
+- An OAuth **client id + secret** issued by Accounting (the same pair `esanj/auth-bridge` uses is fine).
+- **Only if you choose gRPC:** `ext-grpc`, the `grpc/grpc` composer package, and generated protobuf classes
+  (section 8). REST needs none of these.
+
+---
+
+## 3. Installation
+
+Add a path repository to the consuming service and require the package:
+
+```bash
+composer require esanj/remote-eloquent
+php artisan vendor:publish --tag="esanj-remote-eloquent-config"   # optional
+php artisan config:clear
+```
+
+The provider (`Esanj\RemoteEloquent\RemoteEloquentServiceProvider`) and the `RemoteQuery` facade auto-discover. The
+package registers a database connection named `remote` for you.
+
+---
+
+## 4. Configuration & `.env`
+
+The only things you *must* provide are where Accounting is and how to authenticate. Both default to the
+`esanj/auth-bridge` variables, so if this service already logs into Accounting you may only need the driver line.
+
+```env
+REMOTE_ELOQUENT_BASE_URL=https://accounting.example.com      # or leave unset to reuse ACCOUNTING_BRIDGE_BASE_URL
+REMOTE_ELOQUENT_CLIENT_ID=your-client-id                     # or reuse ACCOUNTING_BRIDGE_CLIENT_ID
+REMOTE_ELOQUENT_CLIENT_SECRET=your-client-secret             # or reuse ACCOUNTING_BRIDGE_CLIENT_SECRET
+REMOTE_ELOQUENT_DRIVER=rest                                  # rest (default) | grpc
+```
+
+> ⚠️ Run `php artisan config:clear` after editing `.env`.
+
+Every option (timeouts, token cache store & buffer, connection name, table prefix, gRPC host & message classes)
+is documented in [`src/config/remote_eloquent.php`](../src/config/remote_eloquent.php).
+
+---
+
+## 5. Your first remote model
+
+Create a model that extends `RemoteModel` and points at a **remote** table name:
+
+```php
+<?php
+
+namespace App\Models\Remote;
+
+use Esanj\RemoteEloquent\Eloquent\RemoteModel;
+
+class User extends RemoteModel
+{
+    protected $table = 'users';     // the table name ON the Accounting database
+    protected $guarded = [];
+
+    // Remote values arrive as strings. Casts turn them back into real types.
+    protected $casts = [
+        'id' => 'int',
+        'is_admin' => 'bool',
+        'email_verified_at' => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
+    ];
+}
+```
+
+That's the whole setup. There is **no migration** — the table lives in Accounting, not here.
+
+> 💡 **Always declare `$casts`.** Without them, `id` would be the string `"7"`, `is_admin` the string `"1"`, and
+> timestamps plain strings. With them, Eloquent hydrates `int`, `bool` and `Carbon` as you'd expect.
+
+---
+
+## 6. Reading data
+
+Everything that compiles to a single-table `SELECT` works — which is almost the entire read API:
+
+```php
+User::find(7);
+User::findOrFail(7);
+User::where('email', 'ada@example.com')->first();
+User::where('is_admin', true)->orderByDesc('id')->limit(20)->get();
+User::whereIn('id', [1, 2, 3])->pluck('email');
+User::where('email', 'like', '%@example.com')->exists();
+User::count();                       // aggregate
+User::query()->paginate(15);         // runs a count() then a limited select
+```
+
+Each call becomes one SQL statement and one round-trip. Bindings are sent separately (parameterized), so values are
+never string-interpolated into SQL.
+
+---
+
+## 7. Writes & the insert-id caveat
+
+Updates and deletes are fully supported and return the affected row count:
+
+```php
+User::where('id', 7)->update(['name' => 'Ada L.']);   // => 1
+User::where('id', 7)->delete();                        // => 1
+$user->update(['name' => 'Ada L.']);
+$user->delete();
+```
+
+Inserts run too — the row **is** created:
+
+```php
+User::create(['name' => 'Grace', 'email' => 'grace@example.com']);
+```
+
+**The caveat:** the current server contract returns *affected rows* for a write, not the new auto-increment id.
+So after `create()`, a database-generated `id` is not echoed back. Two clean ways to handle this:
+
+1. **Client-generated keys (recommended).** Use UUIDs/ULIDs so the id is known before insert:
+
+   ```php
+   use Illuminate\Database\Eloquent\Concerns\HasUuids;
+
+   class Token extends RemoteModel
+   {
+       use HasUuids;
+       protected $table = 'tokens';
+   }
+
+   $token = Token::create([...]);   // $token->id is the UUID your app generated
+   ```
+
+2. **Extend the server** to return the last insert id. If the Accounting `QueryResponse` (and the REST payload)
+   grows a `last_insert_id`, this package already reads it — `RemoteConnection` surfaces it through
+   `getLastInsertId()`, so `create()` on an auto-increment model would start returning the real id with no client
+   change.
+
+---
+
+## 8. Choosing a transport: REST vs gRPC
+
+Both speak the **same contract** — `{sql, bindings}` → `{rows, affected_rows}` — so your models behave identically
+either way. Pick per environment with `REMOTE_ELOQUENT_DRIVER`.
+
+### REST (default, recommended to start)
+
+Nothing to install. It POSTs to `{REMOTE_ELOQUENT_BASE_URL}/api/application/query` with a Bearer token. Done.
+
+### gRPC
+
+Faster and lighter on the wire, but it needs a little setup because PHP gRPC clients rely on generated code:
+
+1. **Install the stack** in the consuming service:
+   ```bash
+   pecl install grpc          # or enable ext-grpc in php.ini
+   composer require grpc/grpc google/protobuf
+   ```
+2. **Generate the message classes** from the shipped proto (same file the server uses):
+   ```bash
+   protoc --php_out=app/Grpc proto/eloquent.proto
+   ```
+   (Inside the Accounting monorepo the classes already exist as `App\Services\Grpc\Eloquent\QueryRequest` /
+   `QueryResponse`, so you can point straight at those.)
+3. **Configure**:
+   ```env
+   REMOTE_ELOQUENT_DRIVER=grpc
+   REMOTE_ELOQUENT_GRPC_HOST=accounting.example.com:50051
+   REMOTE_ELOQUENT_GRPC_REQUEST="App\Grpc\Eloquent\QueryRequest"
+   REMOTE_ELOQUENT_GRPC_RESPONSE="App\Grpc\Eloquent\QueryResponse"
+   ```
+
+If gRPC isn't fully wired, the transport fails **loudly and catchably** with a message telling you exactly what's
+missing (`ext-grpc`, `grpc/grpc`, or a message class) — it never silently falls back.
+
+---
+
+## 9. How token caching works
+
+You configure a client id/secret once; the package handles tokens for you:
+
+- On the first query it requests an access token with the **client-credentials** grant and **caches** it (keyed by
+  client id + scope). Subsequent queries reuse the cached token — no token round-trip per query.
+- When the cached token is within `cache_buffer_seconds` (default 60) of expiring, it is refreshed automatically:
+  via the **refresh-token** grant if the server issued a refresh token, otherwise by requesting a fresh
+  client-credentials token. Your queries never fail because a 15-minute token lapsed.
+- If Accounting rejects a token mid-flight (HTTP 401 / gRPC `UNAUTHENTICATED`), the package drops the cached token
+  and retries once with a fresh one.
+
+Force a re-auth yourself with `RemoteQuery::forgetToken()`.
+
+---
+
+## 10. Raw queries with the `RemoteQuery` facade
+
+When you want the remote pipe without a model:
+
+```php
+use Esanj\RemoteEloquent\Facades\RemoteQuery;
+
+// Returns list<array<string,string>>
+$rows = RemoteQuery::select('select * from `users` where `id` = ?', [7]);
+
+// Returns the affected row count
+RemoteQuery::affectingStatement('update `users` set `name` = ? where `id` = ?', ['Ada', 7]);
+
+// Full result object ({rows, affectedRows, lastInsertId})
+$result = RemoteQuery::run('select count(*) as c from `users`');
+
+// The underlying connection / cached token
+RemoteQuery::connection();     // Illuminate\Database\ConnectionInterface
+RemoteQuery::forgetToken();
+```
+
+The same single-table + feature-gate rules below apply to raw queries.
+
+---
+
+## 11. What you can and can't query
+
+The Accounting server only accepts **one single-table statement at a time**. Remote Eloquent passes these limits
+straight through:
+
+| ✅ Works | ❌ Rejected (`InvalidQueryException`) |
+|---|---|
+| `select`, `insert`, `update`, `delete` on one table | `JOIN`, `UNION` |
+| `where`, `whereIn`, `orderBy`, `groupBy`, `having`, `limit`, `offset` | Multiple tables in one statement |
+| aggregates, `paginate`, `pluck`, `exists` | Stacked statements (`;`) or SQL comments |
+
+To combine data across tables, run separate queries and join in PHP (e.g. fetch users, then fetch their wallets by
+id). Eager-loading a relation that lives in the **same** remote database works when each relation query is itself
+single-table.
+
+Two data-fidelity notes:
+
+- **Strings in, casts out.** Columns come back as strings — always declare `$casts` (section 5).
+- **`NULL` → `""`.** The contract represents `NULL` as an empty string. A `NULL` in a nullable text column reads as
+  `''`; with an `int` cast it becomes `0`. Design around this for nullable columns, or check for `''`.
+
+---
+
+## 12. How authorization works on the server
+
+You cannot query anything you like — Accounting authorizes **every** statement against your application's
+capability features, per `table.operation`. On the server this lives in `config/query.php`, e.g.:
+
+```
+users.select  => USER_LIST
+users.insert  => USER_CREATE
+users.update  => USER_UPDATE
+users.delete  => USER_DELETE
+clients.select => CLIENT_LIST
+```
+
+If your application owns `USER_LIST` it may `SELECT` from `users` and nothing else; a `DELETE` would throw
+`QueryAccessDeniedException` (403 / `PERMISSION_DENIED`). Ask an Accounting admin to grant the features your
+service needs. Anything not mapped is denied by default.
+
+---
+
+## 13. Error handling
+
+```php
+use Esanj\RemoteEloquent\Exceptions\InvalidQueryException;
+use Esanj\RemoteEloquent\Exceptions\QueryAccessDeniedException;
+use Esanj\RemoteEloquent\Exceptions\TokenRequestException;
+use Esanj\RemoteEloquent\Exceptions\TransportException;
+
+try {
+    $users = User::where('is_admin', true)->get();
+} catch (QueryAccessDeniedException $e) {   // 403 — missing capability feature
+} catch (InvalidQueryException $e) {        // 422 — statement rejected (JOIN, multi-table, comment…)
+} catch (TokenRequestException $e) {        // could not obtain/refresh the access token
+} catch (TransportException $e) {           // connection/auth/unexpected status
+}
+```
+
+All extend `RemoteEloquentException` (with `getContext()`), and are thrown **unwrapped** — you catch the specific type
+directly, not a generic `QueryException`.
+
+---
+
+## 14. Troubleshooting
+
+**`QueryAccessDeniedException: Running a select on "users" is not exposed` / `...not allowed to...`.**
+Your application doesn't own the required feature (or the `table.operation` isn't mapped on the server). Grant the
+feature in the Accounting panel.
+
+**`InvalidQueryException: JOIN and UNION queries are not supported`.**
+Your Eloquent query compiled to a multi-table statement (often an eager-load across tables or a `whereHas`). Split
+it into single-table queries.
+
+**Everything is a string / dates aren't `Carbon`.**
+Declare `$casts` on the model.
+
+**`TransportException: The gRPC transport is unavailable ...`.**
+Install `ext-grpc` + `grpc/grpc`, generate the message classes, and set `REMOTE_ELOQUENT_GRPC_REQUEST` /
+`REMOTE_ELOQUENT_GRPC_RESPONSE`. Or switch back to `REMOTE_ELOQUENT_DRIVER=rest`.
+
+**`TokenRequestException: client credentials are not configured`.**
+Set `REMOTE_ELOQUENT_CLIENT_ID` / `REMOTE_ELOQUENT_CLIENT_SECRET` (or the `ACCOUNTING_BRIDGE_*` equivalents), then
+`php artisan config:clear`.
+
+**`create()` gives me a model without an `id`.**
+Expected with the current server contract — use client-generated keys (UUID/ULID) or extend the server to return
+`last_insert_id` (section 7).
+
+**Config changes ignored.** `php artisan config:clear` (and re-cache in production).
+
+---
+
+## 15. Cheat sheet
+
+```bash
+composer require esanj/remote-eloquent
+php artisan vendor:publish --tag="esanj-remote-eloquent-config"
+php artisan config:clear
+```
+
+```php
+// Model
+class User extends \Esanj\RemoteEloquent\Eloquent\RemoteModel {
+    protected $table = 'users';
+    protected $casts = ['id' => 'int', 'created_at' => 'datetime'];
+}
+
+// Read
+User::where('email', $email)->first();
+User::query()->orderByDesc('id')->paginate();
+
+// Write (prefer UUID keys for create())
+User::where('id', 7)->update(['name' => 'Ada']);
+User::where('id', 7)->delete();
+
+// Raw + token
+\Esanj\RemoteEloquent\Facades\RemoteQuery::select('select * from `users` where id = ?', [7]);
+\Esanj\RemoteEloquent\Facades\RemoteQuery::forgetToken();
+```
+
+| I want to… | Do this |
+|---|---|
+| Make a table remote | `class X extends RemoteModel { protected $table = '...'; }` |
+| Fix string/date types | declare `$casts` |
+| Use gRPC | `REMOTE_ELOQUENT_DRIVER=grpc` + install ext-grpc/grpc + generate classes |
+| Run raw SQL | `RemoteQuery::select()` / `::affectingStatement()` |
+| Force re-auth | `RemoteQuery::forgetToken()` |
+| Combine tables | run separate single-table queries, join in PHP |
