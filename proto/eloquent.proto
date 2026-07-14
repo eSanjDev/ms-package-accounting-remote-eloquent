@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package eloquent.query;
+
+
+option php_namespace = "App\\Services\\Grpc\\Eloquent";
+option php_metadata_namespace = "App\\Services\\Grpc\\GPBMetadata";
+
+service RemoteEloquentService {
+  rpc RunQuery (QueryRequest) returns (QueryResponse);
+}
+
+message QueryRequest {
+  string sql = 1;
+
+  repeated string bindings = 2;
+}
+
+message DataRow {
+  map<string, string> fields = 1;
+}
+
+message QueryResponse {
+  repeated DataRow rows = 1;
+
+  uint64 affected_rows = 2;
+}
