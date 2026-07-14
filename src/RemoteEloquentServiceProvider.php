@@ -10,12 +10,10 @@ use Esanj\RemoteEloquent\Contracts\TransportInterface;
 use Esanj\RemoteEloquent\Database\RemoteConnection;
 use Esanj\RemoteEloquent\Grpc\GrpcClientFactory;
 use Esanj\RemoteEloquent\Support\RemoteQueryManager;
-use Esanj\RemoteEloquent\Transport\GrpcTransport;
-use Esanj\RemoteEloquent\Transport\RestTransport;
+use Esanj\RemoteEloquent\Transport\TransportManager;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\Connection;
 use Illuminate\Support\ServiceProvider;
-use InvalidArgumentException;
 
 class RemoteEloquentServiceProvider extends ServiceProvider
 {
@@ -43,8 +41,13 @@ class RemoteEloquentServiceProvider extends ServiceProvider
 
     /**
      * Teach Laravel's database layer how to build the "remote" connection, and
-     * register the connection itself so RemoteModels resolve without the user
-     * editing config/database.php.
+     * register the connections themselves so RemoteModels resolve without the
+     * user editing config/database.php.
+     *
+     * Besides the default connection (which uses the configured default
+     * transport), one connection is registered per shipped transport — e.g.
+     * "remote_rest" and "remote_grpc" — so a model can pin itself to a specific
+     * transport with `protected $transport = 'grpc'` (see RemoteModel).
      */
     private function registerRemoteConnection(): void
     {
@@ -52,14 +55,31 @@ class RemoteEloquentServiceProvider extends ServiceProvider
             return new RemoteConnection($connection, $database, $prefix, $config);
         });
 
-        $name = (string) config('esanj.remote_eloquent.connection', self::DRIVER);
+        $base = (string) config('esanj.remote_eloquent.connection', self::DRIVER);
 
+        // Default connection: no pinned transport, so RemoteConnection falls
+        // back to the configured default driver at query time.
+        $this->registerConnection($base, null);
+
+        // Per-transport connections a model can opt into via $transport.
+        foreach (TransportManager::DRIVERS as $transport) {
+            $this->registerConnection($base.'_'.$transport, $transport);
+        }
+    }
+
+    /**
+     * Register a single "remote" database connection, optionally pinned to a
+     * transport ("rest"/"grpc"). A null transport uses the package default.
+     */
+    private function registerConnection(string $name, ?string $transport): void
+    {
         config([
             "database.connections.{$name}" => [
                 'driver' => self::DRIVER,
                 'database' => $name,
                 'prefix' => (string) config('esanj.remote_eloquent.database.prefix', ''),
                 'server_version' => (string) config('esanj.remote_eloquent.database.server_version', '8.0.0'),
+                'transport' => $transport,
             ],
         ]);
     }
@@ -77,21 +97,12 @@ class RemoteEloquentServiceProvider extends ServiceProvider
             return new GrpcClientFactory((array) config('esanj.remote_eloquent.grpc', []));
         });
 
-        $this->app->singleton(TransportInterface::class, function (Application $app): TransportInterface {
-            $driver = (string) config('esanj.remote_eloquent.driver', 'rest');
-            $token = $app->make(AccessTokenProviderInterface::class);
+        $this->app->singleton(TransportManager::class, static function (Application $app): TransportManager {
+            return new TransportManager($app);
+        });
 
-            return match ($driver) {
-                'rest' => new RestTransport($token, (array) config('esanj.remote_eloquent.rest', [])),
-                'grpc' => new GrpcTransport(
-                    $token,
-                    $app->make(GrpcClientFactory::class),
-                    (array) config('esanj.remote_eloquent.grpc', []),
-                ),
-                default => throw new InvalidArgumentException(
-                    "Unsupported remote_eloquent transport driver [{$driver}]. Use \"rest\" or \"grpc\"."
-                ),
-            };
+        $this->app->singleton(TransportInterface::class, static function (Application $app): TransportInterface {
+            return $app->make(TransportManager::class)->driver();
         });
     }
 

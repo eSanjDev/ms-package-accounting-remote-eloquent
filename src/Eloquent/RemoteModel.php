@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Esanj\RemoteEloquent\Eloquent;
 
+use Esanj\RemoteEloquent\Transport\TransportManager;
 use Illuminate\Database\Eloquent\Model;
+use InvalidArgumentException;
 
 /**
  * Base model for data that lives in the Accounting service.
@@ -30,11 +32,61 @@ use Illuminate\Database\Eloquent\Model;
 abstract class RemoteModel extends Model
 {
     /**
-     * Resolve the package's remote connection by default. A subclass may still
-     * override $connection to target a differently-named remote connection.
+     * Per-model transport override: "rest" or "grpc". Leave null to use the
+     * package default (config esanj.remote_eloquent.driver). Set this to pin a
+     * model to a specific transport regardless of the global default:
+     *
+     *   class Ledger extends RemoteModel
+     *   {
+     *       protected $table = 'ledgers';
+     *       protected $transport = 'grpc';   // this model always talks gRPC
+     *   }
+     *
+     * For dynamic decisions, override getTransportName() instead.
+     *
+     * @var string|null
+     */
+    protected $transport = null;
+
+    /**
+     * Resolve the connection this model runs on. When a transport override is
+     * set, the model targets that transport's dedicated remote connection (e.g.
+     * "remote_grpc"); otherwise it uses the package's default remote connection.
+     * An explicit $connection still wins for advanced, multi-endpoint setups.
      */
     public function getConnectionName(): ?string
     {
-        return $this->connection ?? config('esanj.remote_eloquent.connection', 'remote');
+        if ($this->connection !== null) {
+            return $this->connection;
+        }
+
+        $base = (string) config('esanj.remote_eloquent.connection', 'remote');
+        $transport = $this->getTransportName();
+
+        return $transport === null ? $base : $base.'_'.$transport;
+    }
+
+    /**
+     * The transport this model is pinned to, or null for the package default.
+     * Override for dynamic decisions (e.g. per environment).
+     *
+     * @throws InvalidArgumentException When $transport is set to an unknown driver.
+     */
+    public function getTransportName(): ?string
+    {
+        if ($this->transport === null) {
+            return null;
+        }
+
+        if (! TransportManager::supports($this->transport)) {
+            throw new InvalidArgumentException(sprintf(
+                'Model [%s] declares an unknown $transport [%s]. Use one of: %s.',
+                static::class,
+                $this->transport,
+                implode(', ', TransportManager::DRIVERS),
+            ));
+        }
+
+        return $this->transport;
     }
 }

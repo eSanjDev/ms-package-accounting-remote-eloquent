@@ -8,6 +8,7 @@ use Closure;
 use Esanj\RemoteEloquent\Contracts\TransportInterface;
 use Esanj\RemoteEloquent\Exceptions\RemoteConnectionException;
 use Esanj\RemoteEloquent\Exceptions\RemoteEloquentException;
+use Esanj\RemoteEloquent\Transport\TransportManager;
 use Illuminate\Database\MySqlConnection;
 use Throwable;
 
@@ -37,7 +38,14 @@ class RemoteConnection extends MySqlConnection
 
     protected function transport(): TransportInterface
     {
-        return $this->transport ??= app(TransportInterface::class);
+        if ($this->transport !== null) {
+            return $this->transport;
+        }
+
+        $driver = $this->getConfig('transport');
+        $driver = is_string($driver) && $driver !== '' ? $driver : null;
+
+        return $this->transport = app(TransportManager::class)->driver($driver);
     }
 
     /**
