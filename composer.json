@@ -1,31 +1,29 @@
 {
     "name": "esanj/remote-eloquent",
-    "description": "A Laravel package that extends Eloquent ORM to work with remote APIs (REST and gRPC)",
+    "description": "Remote Eloquent models for Laravel — run native Eloquent queries against the Esanj Accounting service over gRPC or REST.",
     "type": "library",
     "license": "MIT",
-    "keywords": [
-        "laravel",
-        "eloquent",
-        "api",
-        "rest",
-        "grpc",
-        "remote",
-        "orm"
+    "authors": [
+        {
+            "name": "Esanj Tech Team",
+            "email": "tech@esanj.ir"
+        }
     ],
     "require": {
-        "php": "^8.0|^8.1|^8.2|^8.3",
-        "guzzlehttp/guzzle": "^7.0",
-        "illuminate/support": "^9.0|^10.0|^11.0|^12.0|^13.0",
-        "grpc/grpc": "^1.57",
-        "google/protobuf": "^4.30"
+        "php": "^8.2|^8.3|^8.4",
+        "illuminate/database": "^11.0|^12.0|^13.0",
+        "illuminate/http": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^9.0|^10.0|^11.0|^12.0",
-        "orchestra/testbench": "^7.0|^8.0|^9.0|^10.0|^11.0"
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "phpunit/phpunit": "^10.0|^11.0|^12.0"
     },
     "suggest": {
-        "grpc/grpc": "Required for gRPC support",
-        "google/protobuf": "Required for gRPC support"
+        "ext-grpc": "Required for the gRPC transport (REMOTE_ELOQUENT_DRIVER=grpc).",
+        "grpc/grpc": "Provides the \\Grpc\\BaseStub client used by the gRPC transport.",
+        "google/protobuf": "Required to (de)serialize the gRPC QueryRequest/QueryResponse messages.",
+        "esanj/auth-bridge": "Reuse an existing client-credentials token issuer instead of the built-in AccessTokenManager."
     },
     "autoload": {
         "psr-4": {
@@ -40,8 +38,11 @@
     "extra": {
         "laravel": {
             "providers": [
-                "Esanj\\RemoteEloquent\\Providers\\RemoteEloquentServiceProvider"
-            ]
+                "Esanj\\RemoteEloquent\\RemoteEloquentServiceProvider"
+            ],
+            "aliases": {
+                "RemoteQuery": "Esanj\\RemoteEloquent\\Facades\\RemoteQuery"
+            }
         }
     },
     "config": {
