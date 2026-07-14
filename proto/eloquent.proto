@@ -3,8 +3,8 @@ syntax = "proto3";
 package eloquent.query;
 
 
-option php_namespace = "App\\Services\\Grpc\\Eloquent";
-option php_metadata_namespace = "App\\Services\\Grpc\\GPBMetadata";
+option php_namespace = "Esanj\\RemoteEloquent\\Grpc";
+option php_metadata_namespace = "Esanj\\RemoteEloquent\\Grpc\\GPBMetadata";
 
 service RemoteEloquentService {
   rpc RunQuery (QueryRequest) returns (QueryResponse);
