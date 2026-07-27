@@ -12,6 +12,15 @@ use Throwable;
  */
 final class TransportException extends RemoteEloquentException
 {
+    /**
+     * Whether the statement may already have reached the server.
+     *
+     * False only when the failure provably happened before anything was sent —
+     * the one case where replaying a write on another transport cannot apply it
+     * twice. See {@see \Esanj\RemoteEloquent\Transport\FallbackPolicy}.
+     */
+    private bool $dispatched = true;
+
     public static function connectionFailed(string $transport, string $reason, ?Throwable $previous = null): self
     {
         return new self(
@@ -41,9 +50,41 @@ final class TransportException extends RemoteEloquentException
 
     public static function grpcUnavailable(string $reason): self
     {
-        return new self(
+        $exception = new self(
             "The gRPC transport is unavailable: {$reason}",
             context: ['reason' => $reason],
         );
+
+        // Thrown while building the client — the statement never left the process.
+        $exception->dispatched = false;
+
+        return $exception;
+    }
+
+    /**
+     * Every transport in the fallback chain failed. The primary failure is kept
+     * as the previous exception; the message names what each attempt hit.
+     *
+     * @param  array<string, string>  $attempts  driver name => failure message, in the order tried.
+     */
+    public static function allTransportsFailed(string $primary, array $attempts, ?Throwable $previous = null): self
+    {
+        $summary = implode('; ', array_map(
+            static fn (string $driver, string $reason): string => "{$driver}: {$reason}",
+            array_keys($attempts),
+            array_values($attempts),
+        ));
+
+        return new self(
+            "Every transport failed for this statement — {$summary}",
+            code: (int) ($previous?->getCode() ?? 0),
+            previous: $previous,
+            context: ['transport' => $primary, 'attempts' => $attempts],
+        );
+    }
+
+    public function wasDispatched(): bool
+    {
+        return $this->dispatched;
     }
 }

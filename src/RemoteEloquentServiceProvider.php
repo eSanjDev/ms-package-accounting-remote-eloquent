@@ -48,6 +48,10 @@ class RemoteEloquentServiceProvider extends ServiceProvider
      * transport), one connection is registered per shipped transport — e.g.
      * "remote_rest" and "remote_grpc" — so a model can pin itself to a specific
      * transport with `protected $transport = 'grpc'` (see RemoteModel).
+     *
+     * Each of those also gets a "_fallback" and a "_nofallback" variant, so
+     * `protected $transportFallback = false` can keep one model on its own
+     * transport while the rest of the service still fails over.
      */
     private function registerRemoteConnection(): void
     {
@@ -57,21 +61,22 @@ class RemoteEloquentServiceProvider extends ServiceProvider
 
         $base = (string) config('esanj.remote_eloquent.connection', self::DRIVER);
 
-        // Default connection: no pinned transport, so RemoteConnection falls
-        // back to the configured default driver at query time.
-        $this->registerConnection($base, null);
+        // A null transport (or fallback) leaves that decision to the package
+        // default, resolved at query time.
+        foreach ([null, ...TransportManager::DRIVERS] as $transport) {
+            $name = $transport === null ? $base : $base.'_'.$transport;
 
-        // Per-transport connections a model can opt into via $transport.
-        foreach (TransportManager::DRIVERS as $transport) {
-            $this->registerConnection($base.'_'.$transport, $transport);
+            $this->registerConnection($name, $transport, null);
+            $this->registerConnection($name.'_fallback', $transport, true);
+            $this->registerConnection($name.'_nofallback', $transport, false);
         }
     }
 
     /**
      * Register a single "remote" database connection, optionally pinned to a
-     * transport ("rest"/"grpc"). A null transport uses the package default.
+     * transport ("rest"/"grpc") and to a fallback decision.
      */
-    private function registerConnection(string $name, ?string $transport): void
+    private function registerConnection(string $name, ?string $transport, ?bool $fallback): void
     {
         config([
             "database.connections.{$name}" => [
@@ -80,6 +85,7 @@ class RemoteEloquentServiceProvider extends ServiceProvider
                 'prefix' => (string) config('esanj.remote_eloquent.database.prefix', ''),
                 'server_version' => (string) config('esanj.remote_eloquent.database.server_version', '8.0.0'),
                 'transport' => $transport,
+                'transport_fallback' => $fallback,
             ],
         ]);
     }
@@ -102,7 +108,7 @@ class RemoteEloquentServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(TransportInterface::class, static function (Application $app): TransportInterface {
-            return $app->make(TransportManager::class)->driver();
+            return $app->make(TransportManager::class)->resolve();
         });
     }
 

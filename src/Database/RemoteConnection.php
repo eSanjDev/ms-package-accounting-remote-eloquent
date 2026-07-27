@@ -45,7 +45,11 @@ class RemoteConnection extends MySqlConnection
         $driver = $this->getConfig('transport');
         $driver = is_string($driver) && $driver !== '' ? $driver : null;
 
-        return $this->transport = app(TransportManager::class)->driver($driver);
+        // null leaves the fallback decision to the package default.
+        $fallback = $this->getConfig('transport_fallback');
+        $fallback = is_bool($fallback) ? $fallback : null;
+
+        return $this->transport = app(TransportManager::class)->resolve($driver, $fallback);
     }
 
     /**

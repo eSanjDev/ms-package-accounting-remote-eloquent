@@ -49,10 +49,29 @@ abstract class RemoteModel extends Model
     protected $transport = null;
 
     /**
+     * Per-model transport-fallback override. Leave null to follow the package
+     * default (config esanj.remote_eloquent.fallback.enabled). Set false to keep
+     * this model on its own transport no matter what:
+     *
+     *   class User extends RemoteModel
+     *   {
+     *       protected $table = 'users';
+     *       protected $transportFallback = false;   // never silently switch transport
+     *   }
+     *
+     * true forces fallback on even when the package default is off. For dynamic
+     * decisions, override getTransportFallback() instead.
+     *
+     * @var bool|null
+     */
+    protected $transportFallback = null;
+
+    /**
      * Resolve the connection this model runs on. When a transport override is
      * set, the model targets that transport's dedicated remote connection (e.g.
-     * "remote_grpc"); otherwise it uses the package's default remote connection.
-     * An explicit $connection still wins for advanced, multi-endpoint setups.
+     * "remote_grpc"); a fallback override narrows that further ("remote_grpc_nofallback").
+     * Otherwise it uses the package's default remote connection. An explicit
+     * $connection still wins for advanced, multi-endpoint setups.
      */
     public function getConnectionName(): ?string
     {
@@ -62,8 +81,13 @@ abstract class RemoteModel extends Model
 
         $base = (string) config('esanj.remote_eloquent.connection', 'remote');
         $transport = $this->getTransportName();
+        $name = $transport === null ? $base : $base.'_'.$transport;
 
-        return $transport === null ? $base : $base.'_'.$transport;
+        return match ($this->getTransportFallback()) {
+            true => $name.'_fallback',
+            false => $name.'_nofallback',
+            null => $name,
+        };
     }
 
     /**
@@ -88,5 +112,28 @@ abstract class RemoteModel extends Model
         }
 
         return $this->transport;
+    }
+
+    /**
+     * Whether this model may fall back to another transport, or null to follow
+     * the package default. Override for dynamic decisions.
+     *
+     * @throws InvalidArgumentException When $transportFallback is neither a bool nor null.
+     */
+    public function getTransportFallback(): ?bool
+    {
+        if ($this->transportFallback === null) {
+            return null;
+        }
+
+        if (! is_bool($this->transportFallback)) {
+            throw new InvalidArgumentException(sprintf(
+                'Model [%s] declares a non-boolean $transportFallback [%s]. Use true, false or null.',
+                static::class,
+                get_debug_type($this->transportFallback),
+            ));
+        }
+
+        return $this->transportFallback;
     }
 }

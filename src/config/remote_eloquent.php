@@ -24,6 +24,42 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Transport fallback
+    |--------------------------------------------------------------------------
+    |
+    | When a statement fails because its transport is unreachable, misconfigured
+    | or answering with an unexpected status, replay it on the next transport in
+    | "chain" — REST takes over for gRPC and the other way round. A rejected
+    | query (422) or a denied table (403) is a server verdict, not a transport
+    | failure, and is never retried elsewhere.
+    |
+    | An individual model may opt out with `protected $transportFallback = false;`
+    | (or force it on with true) — see docs/GUIDE.md.
+    |
+    */
+
+    'fallback' => [
+        'enabled' => (bool) env('REMOTE_ELOQUENT_FALLBACK', true),
+
+        // Which transports take over, per primary, in order.
+        'chain' => [
+            'rest' => ['grpc'],
+            'grpc' => ['rest'],
+        ],
+
+        // Whether INSERT/UPDATE/DELETE may be replayed on the fallback transport.
+        // Off by default: a write that timed out may already have been applied,
+        // and replaying it would apply it twice. Writes that provably never left
+        // the process (e.g. a missing gRPC stack) always fall back regardless.
+        'retry_writes' => (bool) env('REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES', false),
+
+        // Log a warning on every handover so an outage is never silent.
+        'log' => (bool) env('REMOTE_ELOQUENT_FALLBACK_LOG', true),
+        'log_channel' => env('REMOTE_ELOQUENT_FALLBACK_LOG_CHANNEL'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Connection name
     |--------------------------------------------------------------------------
     |
