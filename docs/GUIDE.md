@@ -19,6 +19,7 @@ read and write the **Accounting** database through plain Eloquent — without a 
 6. [Reading data](#6-reading-data)
 7. [Writes & the insert-id caveat](#7-writes--the-insert-id-caveat)
 8. [Choosing a transport: REST vs gRPC](#8-choosing-a-transport-rest-vs-grpc)
+   - [Automatic fallback between transports](#automatic-fallback-between-transports)
 9. [How token caching works](#9-how-token-caching-works)
 10. [Raw queries with the `RemoteQuery` facade](#10-raw-queries-with-the-remotequery-facade)
 11. [What you can and can't query](#11-what-you-can-and-cant-query)
@@ -79,6 +80,7 @@ REMOTE_ELOQUENT_BASE_URL=https://accounting.example.com      # or leave unset to
 REMOTE_ELOQUENT_CLIENT_ID=your-client-id                     # or reuse ACCOUNTING_BRIDGE_CLIENT_ID
 REMOTE_ELOQUENT_CLIENT_SECRET=your-client-secret             # or reuse ACCOUNTING_BRIDGE_CLIENT_SECRET
 REMOTE_ELOQUENT_DRIVER=rest                                  # rest (default) | grpc
+REMOTE_ELOQUENT_FALLBACK=true                                # replay on the other transport when this one is down
 ```
 
 > ⚠️ Run `php artisan config:clear` after editing `.env`.
@@ -211,8 +213,9 @@ step:
    Only set `REMOTE_ELOQUENT_GRPC_REQUEST` / `REMOTE_ELOQUENT_GRPC_RESPONSE` if you want to point at your own
    generated classes instead of the shipped ones.
 
-If gRPC isn't fully wired, the transport fails **loudly and catchably** with a message telling you exactly what's
-missing (`ext-grpc`, `grpc/grpc`, or a message class) — it never silently falls back.
+If gRPC isn't fully wired, the transport fails **catchably** with a message telling you exactly what's missing
+(`ext-grpc`, `grpc/grpc`, or a message class). With fallback enabled (the default) the statement then goes over
+REST and a warning is logged — you keep serving traffic, and the log tells you what to install.
 
 ### Per-model transport override
 
@@ -244,6 +247,101 @@ class Ledger extends RemoteModel
 
 An explicit `$connection` on the model still takes precedence over `$transport` (for advanced multi-endpoint
 setups where you register your own connections).
+
+### Automatic fallback between transports
+
+Picking a transport does not mean betting the service on it. When the transport a statement runs on turns out to be
+**unreachable, misconfigured, or answering with an unexpected status**, the statement is replayed on the other one:
+
+```
+User::find(7)  --> rest    ✗  connection refused
+                            ↓  (warning logged)
+               --> grpc    ✓  rows come back — your code never noticed
+```
+
+It is **on by default**. One env var turns it off everywhere:
+
+```env
+REMOTE_ELOQUENT_FALLBACK=false
+```
+
+The chain is symmetric out of the box (`rest → grpc`, `grpc → rest`) and lives in
+[`src/config/remote_eloquent.php`](../src/config/remote_eloquent.php) under `fallback.chain`.
+
+#### What falls back, and what does not
+
+The fallback replaces a **broken pipe**, never a valid answer. So:
+
+| Failure | Falls back? | Why |
+|---|---|---|
+| Connection refused / timed out | ✅ | The transport is down; the other one may be up. |
+| Unexpected status (5xx, 404, …) | ✅ | Often a misconfigured endpoint. |
+| gRPC stack missing (`ext-grpc`, message classes) | ✅ | Nothing was ever sent. |
+| `InvalidQueryException` (422 — rejected SQL) | ❌ | A server verdict. gRPC rejects the same statement. |
+| `QueryAccessDeniedException` (403 — missing feature) | ❌ | Authorization is transport-agnostic. |
+| `TokenRequestException` | ❌ | Both transports use the same token issuer. |
+
+#### Writes are treated more strictly
+
+A REST `INSERT` that **timed out** may well have been applied on the server — the response just never arrived.
+Replaying it over gRPC would insert the row twice. So `INSERT`/`UPDATE`/`DELETE` do **not** fall back by default.
+They still do when the failure provably happened *before* anything left your process (a missing gRPC stack, for
+example), because there is nothing to double-apply.
+
+If your writes are idempotent and you would rather have availability, opt in:
+
+```env
+REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES=true
+```
+
+> ⚠️ On an accounting database, think twice. A duplicated `UPDATE ... SET balance = balance + ?` is worse than a
+> failed request.
+
+#### Turning fallback off for one model
+
+Some tables should never move quietly between transports — you want the failure, not a detour. Set
+`$transportFallback` on that model:
+
+```php
+class User extends RemoteModel
+{
+    protected $table = 'users';
+    protected $transportFallback = false;   // always this model's own transport, or an error
+}
+```
+
+- `false` — never fall back, whatever the global setting says.
+- `true` — always fall back, even when `REMOTE_ELOQUENT_FALLBACK=false`.
+- `null` (the default) — follow the package setting.
+- Combine it with `$transport` freely: `$transport = 'grpc'` + `$transportFallback = false` means *gRPC or nothing*.
+- Dynamic decisions: override `getTransportFallback(): ?bool` instead.
+
+Each combination has its own auto-registered connection (`remote_nofallback`, `remote_grpc_fallback`, …), so a
+pinned model and a failing-over model never share a transport instance.
+
+#### Observability
+
+Every handover logs a warning — a fallback that hides an outage is worse than the outage:
+
+```
+[warning] remote-eloquent: the [rest] transport failed, retrying on [grpc].
+          {"transport":"rest","fallback":"grpc","reason":"Could not reach the Accounting service over REST: ..."}
+```
+
+Send it somewhere you watch with `REMOTE_ELOQUENT_FALLBACK_LOG_CHANNEL=slack`, or silence it with
+`REMOTE_ELOQUENT_FALLBACK_LOG=false`.
+
+When **every** transport in the chain fails, you get one `TransportException` naming each attempt, with the primary
+failure kept as `getPrevious()` and the per-transport reasons in `getContext()['attempts']`:
+
+```
+Every transport failed for this statement — rest: Could not reach the Accounting service over REST: cURL error 7…;
+grpc: The gRPC transport is unavailable: the ext-grpc PHP extension is not installed.
+```
+
+> ⏱️ **A note on latency.** A fallback costs the primary transport's full timeout before the second attempt starts.
+> While REST is down, every query pays `REMOTE_ELOQUENT_REST_TIMEOUT` (15s by default) on top of the gRPC call.
+> Keep that timeout tight if you rely on fallback under load.
 
 ---
 
@@ -369,6 +467,19 @@ Declare `$casts` on the model.
 Install `ext-grpc` + `grpc/grpc` + `google/protobuf` (the message classes ship with the package, so no `protoc`
 step is needed). Or switch back to `REMOTE_ELOQUENT_DRIVER=rest`.
 
+**`TransportException: Every transport failed for this statement — rest: …; grpc: …`.**
+Fallback did its job and both transports were unreachable. The message names what each one hit — usually a wrong
+`REMOTE_ELOQUENT_BASE_URL` / `REMOTE_ELOQUENT_GRPC_HOST`, or Accounting genuinely being down. `getContext()['attempts']`
+has the same breakdown as an array.
+
+**A model keeps switching transport and I don't want it to.**
+Set `protected $transportFallback = false;` on it (section 8), or turn fallback off service-wide with
+`REMOTE_ELOQUENT_FALLBACK=false`.
+
+**My write failed instead of falling back.**
+That is deliberate: a write that may already have reached the server is never replayed elsewhere, or it could apply
+twice. Enable `REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES=true` only if your writes are idempotent (section 8).
+
 **`TokenRequestException: client credentials are not configured`.**
 Set `REMOTE_ELOQUENT_CLIENT_ID` / `REMOTE_ELOQUENT_CLIENT_SECRET` (or the `ACCOUNTING_BRIDGE_*` equivalents), then
 `php artisan config:clear`.
@@ -415,6 +526,9 @@ User::where('id', 7)->delete();
 | Fix string/date types | declare `$casts` |
 | Use gRPC | `REMOTE_ELOQUENT_DRIVER=grpc` + install ext-grpc/grpc/protobuf (classes ship with the package) |
 | Pin one model to a transport | `protected $transport = 'grpc';` (or `'rest'`) on that model |
+| Survive one transport going down | nothing — it's on by default (`REMOTE_ELOQUENT_FALLBACK=false` to stop it) |
+| Stop one model from falling back | `protected $transportFallback = false;` on that model |
+| Let writes fall back too | `REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES=true` (idempotent writes only) |
 | Run raw SQL | `RemoteQuery::select()` / `::affectingStatement()` |
 | Force re-auth | `RemoteQuery::forgetToken()` |
 | Combine tables | run separate single-table queries, join in PHP |

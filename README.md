@@ -47,6 +47,9 @@ read/write surface keeps working**: `where`, `whereIn`, `orderBy`, `limit`/`offs
 - **Drop-in Eloquent** — extend `RemoteModel`; keep writing normal Eloquent.
 - **Two transports, one contract** — `rest` (turnkey, zero extra deps) or `grpc`. Switch the default with one env
   var, or pin an individual model to a transport with `protected $transport = 'grpc';`.
+- **Automatic transport fallback** — when REST is unreachable the statement is replayed over gRPC (and the other
+  way round), logged, and never at the cost of correctness: server verdicts are not re-asked and writes are not
+  replayed blindly. Opt a model out with `protected $transportFallback = false;`.
 - **Automatic token caching** — an OAuth client-credentials token is fetched once, cached, and transparently
   refreshed shortly before it expires (via the refresh-token grant when available, otherwise re-requested).
 - **Server-enforced authorization** — every statement is gated on the Accounting side by the calling
@@ -92,6 +95,9 @@ REMOTE_ELOQUENT_CLIENT_SECRET=your-client-secret
 
 # Transport: rest (default) or grpc
 REMOTE_ELOQUENT_DRIVER=rest
+
+# Replay a statement on the other transport when this one is unreachable (default true)
+REMOTE_ELOQUENT_FALLBACK=true
 ```
 
 For gRPC, install the stack (`ext-grpc`, `grpc/grpc`, `google/protobuf`) and set:
@@ -167,6 +173,37 @@ class Ledger extends RemoteModel
 Accepted values are `'rest'` and `'grpc'` (an unknown value throws `InvalidArgumentException`). Under the hood each
 transport has its own auto-registered remote connection (`remote`, `remote_rest`, `remote_grpc`), so models using
 different transports stay fully isolated. For dynamic decisions, override `getTransportName(): ?string` instead.
+
+### Transport fallback
+
+If the transport a statement is running on turns out to be unreachable, misconfigured or answering with an
+unexpected status, the statement is replayed on the other one — REST covers for gRPC and gRPC covers for REST —
+and a warning is logged for every handover. It is on by default; turn it off globally with
+`REMOTE_ELOQUENT_FALLBACK=false`.
+
+Two things are deliberately **not** retried, because the fallback replaces a broken pipe, not a valid answer:
+
+- **Server verdicts.** A rejected statement (422) or a denied table (403) is thrown straight through — the other
+  transport would give the same verdict, and hiding it behind a second round-trip only delays the real error.
+- **Writes that may already have landed.** A REST `INSERT` that timed out might have been applied server-side, so
+  replaying it over gRPC could apply it twice. Writes therefore stay put unless the failure provably happened
+  before anything was sent (a missing gRPC stack, say), or you accept the risk with
+  `REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES=true`.
+
+To keep a single model on its own transport regardless of the global setting:
+
+```php
+class User extends RemoteModel
+{
+    protected $table = 'users';
+    protected $transportFallback = false;   // never silently switch transport
+}
+```
+
+`true` forces fallback on for that model even when the package default is off, and `null` (the default) follows the
+package setting. Each combination has its own auto-registered connection (`remote_grpc_nofallback`, …). For dynamic
+decisions, override `getTransportFallback(): ?bool`. When **every** transport in the chain fails you get a single
+`TransportException` naming each attempt, with the primary failure as `getPrevious()`.
 
 ### Raw queries (no model)
 
