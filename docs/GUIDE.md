@@ -405,11 +405,13 @@ Two data-fidelity notes:
 
 - **Strings in, casts out.** Over gRPC a row is a `map<string, string>`, so every non-NULL column comes back as a
   string — always declare `$casts` (section 5). Over REST the JSON types (`int`, `float`, `bool`) survive intact.
-- **`NULL` stays `NULL`.** A `NULL` column reads back as `null`, so `is_null()`, `?? $default`, `SoftDeletes` and
-  nullable casts all work normally. REST carries `null` natively; gRPC cannot put a `NULL` in a string map, so the
-  server also sends `DataRow.null_fields` — the names of the columns that are really `NULL` — and the transport
-  restores them after reading the map. **This needs an Accounting deployment that sends `null_fields`**; talking to
-  an older server, a `NULL` still arrives as `''` (the previous behaviour) rather than erroring.
+- **`NULL` stays `NULL`, both directions.** A `NULL` column reads back as `null`, so `is_null()`, `?? $default`,
+  `SoftDeletes` and nullable casts all work normally — and writing `null` stores a real `NULL`. REST carries `null`
+  natively. gRPC cannot put a `NULL` in a string map or a string list, so it sends the positions alongside:
+  `DataRow.null_fields` names the columns that are really `NULL` on the way back, and `QueryRequest.null_bindings`
+  carries the indexes of the null bindings on the way out; each side restores them. **Both need an Accounting
+  deployment that speaks these fields**; against an older server a `NULL` read still arrives as `''` and a `NULL`
+  write still stores `''` (the previous behaviour) rather than erroring.
 
 ---
 
@@ -467,10 +469,12 @@ it into single-table queries.
 **Everything is a string / dates aren't `Carbon`.**
 Declare `$casts` on the model.
 
-**A `NULL` column reads as `''`, `0` or "now".**
-The Accounting deployment you are talking to predates the `null_fields` contract, so it cannot signal `NULL` over
-the wire. Upgrade Accounting; until then a `datetime` cast on a nullable column produces `Carbon::now()` and
-`trashed()` returns `true` for live rows, so avoid `SoftDeletes` and nullable casts against that server.
+**A `NULL` column reads as `''`, `0` or "now" — or writing `null` stores `''`.**
+The Accounting deployment you are talking to predates the `null_fields` / `null_bindings` contract, so it cannot
+signal `NULL` over gRPC in either direction. Upgrade Accounting; until then a `datetime` cast on a nullable column
+produces `Carbon::now()` and `trashed()` returns `true` for live rows, and a write of `null` lands as `''` — a 1292
+under MySQL strict mode, a `0000-00-00 00:00:00` without it. Against such a server, use
+`REMOTE_ELOQUENT_DRIVER=rest`, which has always carried `null` correctly.
 
 **`TransportException: The gRPC transport is unavailable ...`.**
 Install `ext-grpc` + `grpc/grpc` + `google/protobuf` (the message classes ship with the package, so no `protoc`

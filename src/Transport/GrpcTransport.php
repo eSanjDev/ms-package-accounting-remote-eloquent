@@ -52,6 +52,7 @@ final class GrpcTransport implements TransportInterface
         $request = new $class;
         $request->setSql($sql);
         $request->setBindings($this->stringifyBindings($bindings));
+        $request->setNullBindings($this->nullBindingIndexes($bindings));
 
         return $request;
     }
@@ -127,10 +128,19 @@ final class GrpcTransport implements TransportInterface
         );
     }
 
-    /**
-     * @param  array<int, scalar|null>  $bindings
-     * @return list<string>
-     */
+    private function nullBindingIndexes(array $bindings): array
+    {
+        $indexes = [];
+
+        foreach (array_values($bindings) as $index => $binding) {
+            if ($binding === null) {
+                $indexes[] = $index;
+            }
+        }
+
+        return $indexes;
+    }
+
     private function stringifyBindings(array $bindings): array
     {
         return array_values(array_map(static function ($binding): string {

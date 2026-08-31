@@ -5,7 +5,8 @@
 
 namespace Esanj\RemoteEloquent\Grpc;
 
-use Esanj\RemoteEloquent\Grpc\GPBMetadata\Eloquent;
+use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBUtil;
 
 /**
@@ -13,28 +14,12 @@ use Google\Protobuf\Internal\GPBUtil;
  */
 class QueryRequest extends \Google\Protobuf\Internal\Message
 {
-    /**
-     * Generated from protobuf field <code>string sql = 1;</code>
-     */
     protected $sql = '';
-    /**
-     * Generated from protobuf field <code>repeated string bindings = 2;</code>
-     */
     private $bindings;
+    private $null_bindings;
 
-    /**
-     * Constructor.
-     *
-     * @param array $data {
-     *     Optional. Data for populating the Message object.
-     *
-     * @type string $sql
-     * @type array<string>|\Google\Protobuf\Internal\RepeatedField $bindings
-     * }
-     */
-    public function __construct($data = NULL)
-    {
-        Eloquent::initOnce();
+    public function __construct($data = NULL) {
+        \Esanj\RemoteEloquent\Grpc\GPBMetadata\Eloquent::initOnce();
         parent::__construct($data);
     }
 
@@ -78,6 +63,19 @@ class QueryRequest extends \Google\Protobuf\Internal\Message
     {
         $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::STRING);
         $this->bindings = $arr;
+
+        return $this;
+    }
+
+    public function getNullBindings()
+    {
+        return $this->null_bindings;
+    }
+
+    public function setNullBindings($var)
+    {
+        $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::UINT32);
+        $this->null_bindings = $arr;
 
         return $this;
     }
