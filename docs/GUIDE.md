@@ -18,6 +18,7 @@ read and write the **Accounting** database through plain Eloquent — without a 
 5. [Your first remote model](#5-your-first-remote-model)
 6. [Reading data](#6-reading-data)
 7. [Writes & the insert-id caveat](#7-writes--the-insert-id-caveat)
+7b. [Transactions and atomicity](#7b-transactions-and-atomicity)
 8. [Choosing a transport: REST vs gRPC](#8-choosing-a-transport-rest-vs-grpc)
    - [Automatic fallback between transports](#automatic-fallback-between-transports)
 9. [How token caching works](#9-how-token-caching-works)
@@ -199,6 +200,46 @@ $token = Token::create([...]);   // $token->id is the UUID your app generated �
 
 A UUID/ULID model never asks for an insert id, so it is unaffected either way. Bulk inserts
 (`Model::insert([...])`, `DB::table()->insert()`) never ask for one either and keep working.
+
+---
+
+## 7b. Transactions and atomicity
+
+**There are none, and the connection says so out loud.** Each statement is its own call to Accounting; there is no
+session holding an open transaction and nothing to roll back. So `transaction()`, `beginTransaction()`, `commit()`
+and `rollBack()` all throw `RemoteConnectionException`:
+
+```php
+DB::connection('accounting')->transaction(function () {
+    RemoteAccount::where('id', 1)->decrement('balance', 1000);
+    RemoteAccount::where('id', 2)->increment('balance', 1000);
+});
+// RemoteConnectionException: The remote connection has no real transaction …
+```
+
+Before, that block ran without atomicity and without a word: if the second statement failed, the first stayed
+applied and `transactionLevel()` still read `0`, so nothing anywhere suggested a problem. On an accounting
+database that is a half-finished transfer. The exception fires **before** the first statement is sent, so nothing
+is written.
+
+**What to do instead**, in order of preference:
+
+1. **Put the whole operation behind one Accounting endpoint** that opens a local transaction there. This is the
+   only way to get real atomicity, and it is the right shape for anything money-related.
+2. **Write a compensating action** — perform step two, and on failure issue the statement that undoes step one.
+   Weaker, but honest about what it is.
+3. **Restructure so a single statement is enough** (one `UPDATE … SET balance = balance - ?` rather than a read
+   then a write).
+
+**The escape hatch.** `REMOTE_ELOQUENT_ALLOW_UNSAFE_TRANSACTIONS=true` restores the old behaviour: the callback
+just runs, with no atomicity at all. Use it only when every such block is a single statement, or is safe to leave
+partially applied.
+
+> ⚠️ `saveOrFail()`, `updateOrFail()` and `deleteOrFail()` call `transaction()` internally, so they throw too. Each
+> wraps a single statement, which a database is already atomic about, so use `save()` / `update()` / `delete()` —
+> or turn the flag on. Ordinary reads and writes, `paginate()`, `updateOrCreate()` and eager loading never open a
+> transaction and are unaffected: `transactionLevel()` stays `0`, which is what keeps Eloquent's
+> `withSavepointIfNeeded()` from routing them through `transaction()`.
 
 ---
 
@@ -519,6 +560,12 @@ The row was created, but the Accounting deployment predates the `last_insert_id`
 Upgrade Accounting, or give the model `HasUuids`/`HasUlids` (section 7). The package throws here on purpose: the
 alternative is a model whose every later `save()`/`delete()` silently matches no rows.
 
+**`RemoteConnectionException: The remote connection has no real transaction`.**
+Something called `DB::transaction()` / `beginTransaction()` on the remote connection — often indirectly through
+`saveOrFail()`, `updateOrFail()` or `deleteOrFail()`. There is no atomicity to give, so it fails instead of
+pretending (section 7b). Use the plain `save()`/`update()`/`delete()`, move the operation into one Accounting
+endpoint, or set `REMOTE_ELOQUENT_ALLOW_UNSAFE_TRANSACTIONS=true` to accept a non-atomic block.
+
 **Config changes ignored.** `php artisan config:clear` (and re-cache in production).
 
 ---
@@ -542,9 +589,11 @@ class User extends \Esanj\RemoteEloquent\Eloquent\RemoteModel {
 User::where('email', $email)->first();
 User::query()->orderByDesc('id')->paginate();
 
-// Write (prefer UUID keys for create())
+// Write
+User::create(['name' => 'Grace'])->id;   // real id (needs Accounting with last_insert_id)
 User::where('id', 7)->update(['name' => 'Ada']);
 User::where('id', 7)->delete();
+// No DB::transaction() on this connection — it throws (section 7b).
 
 // Raw + token
 \Esanj\RemoteEloquent\Facades\RemoteQuery::select('select * from `users` where id = ?', [7]);
@@ -556,6 +605,8 @@ User::where('id', 7)->delete();
 | Make a table remote | `class X extends RemoteModel { protected $table = '...'; }` |
 | Fix string/date types | declare `$casts` |
 | Use gRPC | `REMOTE_ELOQUENT_DRIVER=grpc` + install ext-grpc/grpc/protobuf (classes ship with the package) |
+| Get atomicity across statements | You can't from here — put the operation behind one Accounting endpoint (section 7b) |
+| Run a non-atomic `transaction()` block anyway | `REMOTE_ELOQUENT_ALLOW_UNSAFE_TRANSACTIONS=true` |
 | Pin one model to a transport | `protected $transport = 'grpc';` (or `'rest'`) on that model |
 | Survive one transport going down | nothing — it's on by default (`REMOTE_ELOQUENT_FALLBACK=false` to stop it) |
 | Stop one model from falling back | `protected $transportFallback = false;` on that model |

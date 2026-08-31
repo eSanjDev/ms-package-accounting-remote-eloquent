@@ -16,6 +16,17 @@ final class RemoteConnectionException extends RemoteEloquentException
         );
     }
 
+    public static function transactionsUnsupported(): self
+    {
+        return new self(
+            'The remote connection has no real transaction: statements run one call at a time '.
+            'and nothing can be rolled back, so a failure halfway through leaves the earlier '.
+            'writes applied. For atomicity, put the whole operation behind a single Accounting '.
+            'endpoint that opens a local transaction, or write a compensating action. To run the '.
+            'block without any atomicity anyway, set esanj.remote_eloquent.allow_unsafe_transactions.'
+        );
+    }
+
     public static function pdoUnavailable(): self
     {
         return new self(

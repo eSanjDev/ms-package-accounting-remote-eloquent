@@ -230,30 +230,48 @@ class RemoteConnection extends MySqlConnection
     }
 
     /**
-     * The remote contract has no transaction support; run the callback directly.
+     * There is no transaction to open: each statement is its own call and nothing can
+     * be rolled back. Running the callback anyway would make a block that reads as
+     * transactional leave half-applied writes behind on the first failure, so it fails
+     * up front instead — unless the application has opted into the old behaviour.
      *
      * {@inheritDoc}
      */
     public function transaction(Closure $callback, $attempts = 1)
     {
+        $this->guardTransactions();
+
         return $callback($this);
     }
 
     public function beginTransaction(): void
     {
-        // no-op
+        $this->guardTransactions();
     }
 
     public function commit(): void
     {
-        // no-op
+        $this->guardTransactions();
     }
 
     public function rollBack($toLevel = null): void
     {
-        // no-op
+        $this->guardTransactions();
     }
 
+    private function guardTransactions(): void
+    {
+        if ((bool) config('esanj.remote_eloquent.allow_unsafe_transactions', false)) {
+            return;
+        }
+
+        throw RemoteConnectionException::transactionsUnsupported();
+    }
+
+    /**
+     * Always zero, which is what keeps Eloquent's withSavepointIfNeeded() from routing
+     * ordinary reads and writes through transaction().
+     */
     public function transactionLevel(): int
     {
         return 0;

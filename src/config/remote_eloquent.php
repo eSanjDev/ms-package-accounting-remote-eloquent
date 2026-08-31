@@ -132,6 +132,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Unsafe transactions
+    |--------------------------------------------------------------------------
+    |
+    | The remote connection cannot open a real database transaction: each
+    | statement is a separate call and there is nothing to roll back. By default
+    | transaction()/beginTransaction() therefore throw, because a block that looks
+    | transactional but silently is not turns a failed multi-step write into
+    | half-applied data — on an accounting database, a half-finished transfer.
+    |
+    | Turning this on restores the old behaviour: the callback simply runs, with
+    | no atomicity whatsoever. Only do that if every such block is a single
+    | statement or is safe to leave partially applied. For real atomicity, put the
+    | whole operation behind one Accounting endpoint that opens a local
+    | transaction, or write a compensating action.
+    |
+    */
+
+    'allow_unsafe_transactions' => (bool) env('REMOTE_ELOQUENT_ALLOW_UNSAFE_TRANSACTIONS', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | gRPC transport
     |--------------------------------------------------------------------------
     |
