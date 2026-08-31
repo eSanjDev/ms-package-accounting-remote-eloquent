@@ -48,6 +48,15 @@ final class TransportException extends RemoteEloquentException
         );
     }
 
+    public static function requestFailed(string $transport, Throwable $previous): self
+    {
+        return new self(
+            "The {$transport} request to the Accounting service failed: {$previous->getMessage()}",
+            previous: $previous,
+            context: ['transport' => $transport, 'reason' => $previous->getMessage()],
+        );
+    }
+
     public static function grpcUnavailable(string $reason): self
     {
         $exception = new self(

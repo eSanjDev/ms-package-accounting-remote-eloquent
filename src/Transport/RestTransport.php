@@ -9,11 +9,13 @@ use Esanj\RemoteEloquent\Contracts\TransportInterface;
 use Esanj\RemoteEloquent\DTOs\QueryResult;
 use Esanj\RemoteEloquent\Exceptions\InvalidQueryException;
 use Esanj\RemoteEloquent\Exceptions\QueryAccessDeniedException;
+use Esanj\RemoteEloquent\Exceptions\RemoteEloquentException;
 use Esanj\RemoteEloquent\Exceptions\TransportException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Throwable;
 
 final class RestTransport implements TransportInterface
 {
@@ -48,6 +50,10 @@ final class RestTransport implements TransportInterface
                 return $this->request($forceFreshToken)->post($this->url(), $payload);
             } catch (ConnectionException $e) {
                 $lastError = $e;
+            } catch (RemoteEloquentException $e) {
+                throw $e;
+            } catch (Throwable $e) {
+                throw TransportException::requestFailed('REST', $e);
             }
         }
 
@@ -112,7 +118,13 @@ final class RestTransport implements TransportInterface
 
     private function normalizeBindings(array $bindings): array
     {
-        return array_values($bindings);
+        return array_values(array_map(static function ($binding) {
+            if (is_string($binding) && !mb_check_encoding($binding, 'UTF-8')) {
+                return ['__b64' => base64_encode($binding)];
+            }
+
+            return $binding;
+        }, $bindings));
     }
 
     private function bearer(bool $forceFresh): string

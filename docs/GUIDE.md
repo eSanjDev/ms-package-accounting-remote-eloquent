@@ -566,6 +566,13 @@ Something called `DB::transaction()` / `beginTransaction()` on the remote connec
 pretending (section 7b). Use the plain `save()`/`update()`/`delete()`, move the operation into one Accounting
 endpoint, or set `REMOTE_ELOQUENT_ALLOW_UNSAFE_TRANSACTIONS=true` to accept a non-atomic block.
 
+**Writing a BLOB / raw bytes.**
+Over REST it works: a binding that is not valid UTF-8 is wrapped as `{"__b64": "..."}` and unwrapped on the
+server, so `json_encode` no longer fails on the payload. Over **gRPC it does not** — `repeated string bindings`
+is a protobuf `string`, which must be valid UTF-8, so serialization throws `Expect utf-8 encoding`. Use
+`REMOTE_ELOQUENT_DRIVER=rest` for models with binary columns, or base64 the column in your own code. **Reading**
+a binary column is not supported on either transport: the REST response cannot `json_encode` the raw bytes.
+
 **Config changes ignored.** `php artisan config:clear` (and re-cache in production).
 
 ---
