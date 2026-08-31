@@ -18,6 +18,7 @@ message QueryRequest {
 
 message DataRow {
   map<string, string> fields = 1;
+  repeated string null_fields = 2;
 }
 
 message QueryResponse {

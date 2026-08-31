@@ -5,7 +5,6 @@
 
 namespace Esanj\RemoteEloquent\Grpc\GPBMetadata;
 
-
 class Eloquent
 {
     public static $is_initialized = false;
@@ -14,11 +13,11 @@ class Eloquent
         $pool = \Google\Protobuf\Internal\DescriptorPool::getGeneratedPool();
 
         if (static::$is_initialized == true) {
-            return;
+          return;
         }
         $pool->internalAddGeneratedFile(
-            "\x0A\xBD\x03\x0A\x0Eeloquent.proto\x12\x0Eeloquent.query\"-\x0A\x0CQueryRequest\x12\x0B\x0A\x03sql\x18\x01 \x01(\x09\x12\x10\x0A\x08bindings\x18\x02 \x03(\x09\"m\x0A\x07DataRow\x123\x0A\x06fields\x18\x01 \x03(\x0B2#.eloquent.query.DataRow.FieldsEntry\x1A-\x0A\x0BFieldsEntry\x12\x0B\x0A\x03key\x18\x01 \x01(\x09\x12\x0D\x0A\x05value\x18\x02 \x01(\x09:\x028\x01\"M\x0A\x0DQueryResponse\x12%\x0A\x04rows\x18\x01 \x03(\x0B2\x17.eloquent.query.DataRow\x12\x15\x0A\x0Daffected_rows\x18\x02 \x01(\x042`\x0A\x15RemoteEloquentService\x12G\x0A\x08RunQuery\x12\x1C.eloquent.query.QueryRequest\x1A\x1D.eloquent.query.QueryResponseBD\xCA\x02\x19Esanj\\RemoteEloquent\\Grpc\xE2\x02%Esanj\\RemoteEloquent\\Grpc\\GPBMetadatab\x06proto3"
-            , true);
+            "\x0A\xD3\x03\x0A\x0Eeloquent.proto\x12\x0Eeloquent.query\"-\x0A\x0CQueryRequest\x12\x0B\x0A\x03sql\x18\x01 \x01(\x09\x12\x10\x0A\x08bindings\x18\x02 \x03(\x09\"\x82\x01\x0A\x07DataRow\x123\x0A\x06fields\x18\x01 \x03(\x0B2#.eloquent.query.DataRow.FieldsEntry\x12\x13\x0A\x0Bnull_fields\x18\x02 \x03(\x09\x1A-\x0A\x0BFieldsEntry\x12\x0B\x0A\x03key\x18\x01 \x01(\x09\x12\x0D\x0A\x05value\x18\x02 \x01(\x09:\x028\x01\"M\x0A\x0DQueryResponse\x12%\x0A\x04rows\x18\x01 \x03(\x0B2\x17.eloquent.query.DataRow\x12\x15\x0A\x0Daffected_rows\x18\x02 \x01(\x042`\x0A\x15RemoteEloquentService\x12G\x0A\x08RunQuery\x12\x1C.eloquent.query.QueryRequest\x1A\x1D.eloquent.query.QueryResponseBD\xCA\x02\x19Esanj\\RemoteEloquent\\Grpc\xE2\x02%Esanj\\RemoteEloquent\\Grpc\\GPBMetadatab\x06proto3"
+        , true);
 
         static::$is_initialized = true;
     }

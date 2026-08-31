@@ -403,9 +403,13 @@ single-table.
 
 Two data-fidelity notes:
 
-- **Strings in, casts out.** Columns come back as strings — always declare `$casts` (section 5).
-- **`NULL` → `""`.** The contract represents `NULL` as an empty string. A `NULL` in a nullable text column reads as
-  `''`; with an `int` cast it becomes `0`. Design around this for nullable columns, or check for `''`.
+- **Strings in, casts out.** Over gRPC a row is a `map<string, string>`, so every non-NULL column comes back as a
+  string — always declare `$casts` (section 5). Over REST the JSON types (`int`, `float`, `bool`) survive intact.
+- **`NULL` stays `NULL`.** A `NULL` column reads back as `null`, so `is_null()`, `?? $default`, `SoftDeletes` and
+  nullable casts all work normally. REST carries `null` natively; gRPC cannot put a `NULL` in a string map, so the
+  server also sends `DataRow.null_fields` — the names of the columns that are really `NULL` — and the transport
+  restores them after reading the map. **This needs an Accounting deployment that sends `null_fields`**; talking to
+  an older server, a `NULL` still arrives as `''` (the previous behaviour) rather than erroring.
 
 ---
 
@@ -462,6 +466,11 @@ it into single-table queries.
 
 **Everything is a string / dates aren't `Carbon`.**
 Declare `$casts` on the model.
+
+**A `NULL` column reads as `''`, `0` or "now".**
+The Accounting deployment you are talking to predates the `null_fields` contract, so it cannot signal `NULL` over
+the wire. Upgrade Accounting; until then a `datetime` cast on a nullable column produces `Carbon::now()` and
+`trashed()` returns `true` for live rows, so avoid `SoftDeletes` and nullable casts against that server.
 
 **`TransportException: The gRPC transport is unavailable ...`.**
 Install `ext-grpc` + `grpc/grpc` + `google/protobuf` (the message classes ship with the package, so no `protoc`

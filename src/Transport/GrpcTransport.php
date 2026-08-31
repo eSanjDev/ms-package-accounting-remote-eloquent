@@ -13,13 +13,6 @@ use Esanj\RemoteEloquent\Exceptions\TransportException;
 use Esanj\RemoteEloquent\Grpc\GrpcClientFactory;
 use Google\Protobuf\Internal\Message;
 
-/**
- * Delivers compiled SQL to eloquent.query.RemoteEloquentService/RunQuery.
- *
- * Speaks the exact same {sql, bindings} -> {rows, affected_rows} contract as
- * the REST transport. Because the gRPC field is `repeated string bindings`,
- * every binding is stringified and a null binding travels as an empty string.
- */
 final class GrpcTransport implements TransportInterface
 {
     private const STATUS_OK = 0;
@@ -119,6 +112,10 @@ final class GrpcTransport implements TransportInterface
 
             foreach ($row->getFields() as $key => $value) {
                 $fields[(string) $key] = (string) $value;
+            }
+
+            foreach ($row->getNullFields() as $column) {
+                $fields[(string) $column] = null;
             }
 
             $rows[] = $fields;

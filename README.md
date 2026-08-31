@@ -223,8 +223,8 @@ These come from the Accounting server contract — Remote Eloquent surfaces them
 |---|---|
 | **Single table per query** | No `JOIN`/`UNION`, no cross-table `whereHas`. Load related data with separate queries. Violations throw `InvalidQueryException`. |
 | **Feature-gated** | Each `table.operation` must be permitted for your application on the Accounting side (e.g. `USER_LIST` → `SELECT users`). Otherwise `QueryAccessDeniedException`. |
-| **Values are strings** | Every column comes back as a string, so **declare `$casts`**. Timestamps, ints and bools then hydrate correctly. |
-| **`NULL` reads as `""`** | The contract stringifies `NULL` to an empty string. A `nullable` column that is `NULL` arrives as `''`; a nullable-int cast becomes `0`. Keep this in mind for nullable columns. |
+| **Values are strings over gRPC** | The gRPC row map is `map<string, string>`, so every non-NULL column arrives as a string — **declare `$casts`** and timestamps, ints and bools hydrate correctly. Over REST the JSON types survive as they are. |
+| **`NULL` stays `NULL`** | A `NULL` column reads back as `null` on both transports, so `SoftDeletes`, `?? $default` and nullable casts all behave normally. Needs Accounting deployed with the `null_fields` contract; against an older server a `NULL` still arrives as `''`. |
 | **No transactions** | The remote connection cannot open a real DB transaction; `DB::transaction()` on it runs the callback without atomicity. |
 
 ## Error handling

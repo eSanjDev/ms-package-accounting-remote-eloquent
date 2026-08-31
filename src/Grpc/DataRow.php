@@ -5,7 +5,8 @@
 
 namespace Esanj\RemoteEloquent\Grpc;
 
-use Esanj\RemoteEloquent\Grpc\GPBMetadata\Eloquent;
+use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBUtil;
 
 /**
@@ -13,23 +14,11 @@ use Google\Protobuf\Internal\GPBUtil;
  */
 class DataRow extends \Google\Protobuf\Internal\Message
 {
-    /**
-     * Generated from protobuf field <code>map<string, string> fields = 1;</code>
-     */
     private $fields;
+    private $null_fields;
 
-    /**
-     * Constructor.
-     *
-     * @param array $data {
-     *     Optional. Data for populating the Message object.
-     *
-     * @type array|\Google\Protobuf\Internal\MapField $fields
-     * }
-     */
-    public function __construct($data = NULL)
-    {
-        Eloquent::initOnce();
+    public function __construct($data = NULL) {
+        \Esanj\RemoteEloquent\Grpc\GPBMetadata\Eloquent::initOnce();
         parent::__construct($data);
     }
 
@@ -51,6 +40,19 @@ class DataRow extends \Google\Protobuf\Internal\Message
     {
         $arr = GPBUtil::checkMapField($var, \Google\Protobuf\Internal\GPBType::STRING, \Google\Protobuf\Internal\GPBType::STRING);
         $this->fields = $arr;
+
+        return $this;
+    }
+
+    public function getNullFields()
+    {
+        return $this->null_fields;
+    }
+
+    public function setNullFields($var)
+    {
+        $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::STRING);
+        $this->null_fields = $arr;
 
         return $this;
     }
