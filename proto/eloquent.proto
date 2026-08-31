@@ -26,4 +26,6 @@ message QueryResponse {
   repeated DataRow rows = 1;
 
   uint64 affected_rows = 2;
+
+  uint64 last_insert_id = 3;
 }

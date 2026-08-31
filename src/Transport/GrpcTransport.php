@@ -122,9 +122,12 @@ final class GrpcTransport implements TransportInterface
             $rows[] = $fields;
         }
 
+        $lastInsertId = (int) $response->getLastInsertId();
+
         return new QueryResult(
             rows: $rows,
             affectedRows: (int) $response->getAffectedRows(),
+            lastInsertId: $lastInsertId > 0 ? (string) $lastInsertId : null,
         );
     }
 

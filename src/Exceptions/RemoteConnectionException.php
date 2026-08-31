@@ -4,13 +4,18 @@ declare(strict_types=1);
 
 namespace Esanj\RemoteEloquent\Exceptions;
 
-/**
- * Something asked the remote connection for a capability it does not have —
- * most commonly a raw PDO handle or a real database transaction. Neither exists
- * because the connection executes over gRPC/REST, not a local driver.
- */
 final class RemoteConnectionException extends RemoteEloquentException
 {
+    public static function insertIdUnavailable(): self
+    {
+        return new self(
+            'The insert succeeded but Accounting returned no last_insert_id, so the model has no key. '.
+            'Upgrade the Accounting deployment to one that returns it, or give this model a '.
+            'client-generated key (HasUuids / HasUlids) — otherwise every later save() and delete() '.
+            'on the returned model compiles to "where `id` is null" and matches no rows.'
+        );
+    }
+
     public static function pdoUnavailable(): self
     {
         return new self(

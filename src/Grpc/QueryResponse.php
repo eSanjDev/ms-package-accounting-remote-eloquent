@@ -5,7 +5,8 @@
 
 namespace Esanj\RemoteEloquent\Grpc;
 
-use Esanj\RemoteEloquent\Grpc\GPBMetadata\Eloquent;
+use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBUtil;
 
 /**
@@ -21,6 +22,13 @@ class QueryResponse extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>uint64 affected_rows = 2;</code>
      */
     protected $affected_rows = 0;
+    /**
+     * Auto-increment id produced by an INSERT. 0 means the statement produced none
+     * (a non-insert, or a table with a client-generated key).
+     *
+     * Generated from protobuf field <code>uint64 last_insert_id = 3;</code>
+     */
+    protected $last_insert_id = 0;
 
     /**
      * Constructor.
@@ -28,12 +36,15 @@ class QueryResponse extends \Google\Protobuf\Internal\Message
      * @param array $data {
      *     Optional. Data for populating the Message object.
      *
-     * @type int|string $affected_rows
+     *     @type array<\Esanj\RemoteEloquent\Grpc\DataRow>|\Google\Protobuf\Internal\RepeatedField $rows
+     *     @type int|string $affected_rows
+     *     @type int|string $last_insert_id
+     *           Auto-increment id produced by an INSERT. 0 means the statement produced none
+     *           (a non-insert, or a table with a client-generated key).
      * }
      */
-    public function __construct($data = NULL)
-    {
-        Eloquent::initOnce();
+    public function __construct($data = NULL) {
+        \Esanj\RemoteEloquent\Grpc\GPBMetadata\Eloquent::initOnce();
         parent::__construct($data);
     }
 
@@ -48,11 +59,12 @@ class QueryResponse extends \Google\Protobuf\Internal\Message
 
     /**
      * Generated from protobuf field <code>repeated .eloquent.query.DataRow rows = 1;</code>
+     * @param array<\Esanj\RemoteEloquent\Grpc\DataRow>|\Google\Protobuf\Internal\RepeatedField $var
      * @return $this
      */
     public function setRows($var)
     {
-        $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::MESSAGE, DataRow::class);
+        $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::MESSAGE, \Esanj\RemoteEloquent\Grpc\DataRow::class);
         $this->rows = $arr;
 
         return $this;
@@ -76,6 +88,34 @@ class QueryResponse extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkUint64($var);
         $this->affected_rows = $var;
+
+        return $this;
+    }
+
+    /**
+     * Auto-increment id produced by an INSERT. 0 means the statement produced none
+     * (a non-insert, or a table with a client-generated key).
+     *
+     * Generated from protobuf field <code>uint64 last_insert_id = 3;</code>
+     * @return int|string
+     */
+    public function getLastInsertId()
+    {
+        return $this->last_insert_id;
+    }
+
+    /**
+     * Auto-increment id produced by an INSERT. 0 means the statement produced none
+     * (a non-insert, or a table with a client-generated key).
+     *
+     * Generated from protobuf field <code>uint64 last_insert_id = 3;</code>
+     * @param int|string $var
+     * @return $this
+     */
+    public function setLastInsertId($var)
+    {
+        GPBUtil::checkUint64($var);
+        $this->last_insert_id = $var;
 
         return $this;
     }

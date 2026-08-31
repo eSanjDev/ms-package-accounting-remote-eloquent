@@ -120,12 +120,20 @@ class RemoteConnection extends MySqlConnection
         });
     }
 
+    public function getLastInsertId()
+    {
+        if ($this->lastInsertId === null) {
+            throw RemoteConnectionException::insertIdUnavailable();
+        }
+
+        return $this->lastInsertId;
+    }
+
     /**
      * {@inheritDoc}
      *
-     * The last insert id is captured only when the server returns one; the
-     * current contract returns affected rows for writes, so auto-increment ids
-     * are not echoed back (see docs/GUIDE.md — prefer client-generated keys).
+     * Assigned unconditionally so a server that returns no id clears the previous
+     * statement's value instead of leaving a stale one behind.
      */
     public function insert($query, $bindings = [], $sequence = null)
     {

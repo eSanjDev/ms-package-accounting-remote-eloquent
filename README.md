@@ -152,10 +152,12 @@ $user->update(['name' => 'Grace H.']);
 $user->delete();
 ```
 
-> ⚠️ **Auto-increment ids on insert.** The current server contract returns *affected rows* for writes, not the new
-> id, so `create()` cannot echo back a database-generated `id` unless the server is extended to return one. Prefer
-> **client-generated keys** (UUID/ULID via `HasUuids`) for models you create remotely. Reads, updates and deletes
-> are unaffected. See [docs/GUIDE.md](docs/GUIDE.md#writes--the-insert-id-caveat).
+> ⚠️ **Auto-increment ids on insert.** `create()` returns the real `id` — Accounting reports it as
+> `last_insert_id` on both transports. Against an older Accounting that does not, the package **throws**
+> `RemoteConnectionException` instead of returning a model with a null key, because such a model's later
+> `save()`/`delete()` would compile to ``where `id` is null`` and silently match nothing. For those servers,
+> client-generated keys (UUID/ULID via `HasUuids`) are **required** for models you create remotely. Reads, updates
+> and deletes are unaffected. See [docs/GUIDE.md](docs/GUIDE.md#writes--the-insert-id-caveat).
 
 ### Per-model transport
 

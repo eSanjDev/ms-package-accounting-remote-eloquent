@@ -161,27 +161,44 @@ Inserts run too — the row **is** created:
 User::create(['name' => 'Grace', 'email' => 'grace@example.com']);
 ```
 
-**The caveat:** the current server contract returns *affected rows* for a write, not the new auto-increment id.
-So after `create()`, a database-generated `id` is not echoed back. Two clean ways to handle this:
+`create()` on an auto-increment model returns the real key: Accounting reports the id as `data.last_insert_id`
+over REST and `QueryResponse.last_insert_id` over gRPC, and `RemoteConnection::getLastInsertId()` hands it to
+Eloquent exactly as a local PDO would.
 
-1. **Client-generated keys (recommended).** Use UUIDs/ULIDs so the id is known before insert:
+```php
+$user = User::create(['name' => 'Grace']);
+$user->id;        // 4242
+$user->update(['status' => 'active']);   // update ... where `id` = ?   ✔
+```
 
-   ```php
-   use Illuminate\Database\Eloquent\Concerns\HasUuids;
+**Against an Accounting deployment that predates this contract**, no id comes back. The package then **throws**
+`RemoteConnectionException` from `getLastInsertId()` rather than handing you a model with a null key:
 
-   class Token extends RemoteModel
-   {
-       use HasUuids;
-       protected $table = 'tokens';
-   }
+```
+The insert succeeded but Accounting returned no last_insert_id, so the model has no key. …
+```
 
-   $token = Token::create([...]);   // $token->id is the UUID your app generated
-   ```
+That is deliberate. A null key is not a missing convenience — the row *is* created, but every later `save()` and
+`delete()` on that model compiles to ``where `id` is null``, matches nothing, and reports success. A loud failure at
+the insert beats a silent no-op three lines later.
 
-2. **Extend the server** to return the last insert id. If the Accounting `QueryResponse` (and the REST payload)
-   grows a `last_insert_id`, this package already reads it — `RemoteConnection` surfaces it through
-   `getLastInsertId()`, so `create()` on an auto-increment model would start returning the real id with no client
-   change.
+So when you talk to such a server, **client-generated keys are required, not merely recommended**, for any model
+you create remotely:
+
+```php
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+
+class Token extends RemoteModel
+{
+    use HasUuids;
+    protected $table = 'tokens';
+}
+
+$token = Token::create([...]);   // $token->id is the UUID your app generated — no server round trip
+```
+
+A UUID/ULID model never asks for an insert id, so it is unaffected either way. Bulk inserts
+(`Model::insert([...])`, `DB::table()->insert()`) never ask for one either and keep working.
 
 ---
 
@@ -497,9 +514,10 @@ twice. Enable `REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES=true` only if your writes a
 Set `REMOTE_ELOQUENT_CLIENT_ID` / `REMOTE_ELOQUENT_CLIENT_SECRET` (or the `ACCOUNTING_BRIDGE_*` equivalents), then
 `php artisan config:clear`.
 
-**`create()` gives me a model without an `id`.**
-Expected with the current server contract — use client-generated keys (UUID/ULID) or extend the server to return
-`last_insert_id` (section 7).
+**`RemoteConnectionException: The insert succeeded but Accounting returned no last_insert_id`.**
+The row was created, but the Accounting deployment predates the `last_insert_id` contract so the model has no key.
+Upgrade Accounting, or give the model `HasUuids`/`HasUlids` (section 7). The package throws here on purpose: the
+alternative is a model whose every later `save()`/`delete()` silently matches no rows.
 
 **Config changes ignored.** `php artisan config:clear` (and re-cache in production).
 
