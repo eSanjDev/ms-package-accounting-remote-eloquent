@@ -60,7 +60,7 @@ read/write surface keeps working**: `where`, `whereIn`, `orderBy`, `limit`/`offs
 
 ## Requirements
 
-- PHP **8.2+**, Laravel **11 – 13** (tested on 13).
+- PHP **8.2+**, Laravel **11 – 13** (tested on 12).
 - Reachable Accounting service (REST base URL and/or gRPC endpoint) plus an OAuth **client id/secret** issued by it.
 - **gRPC only:** the `ext-grpc` PHP extension plus the `grpc/grpc` and `google/protobuf` composer packages. The
   protobuf message classes ship with this package — no code generation needed. REST needs none of this.
@@ -105,6 +105,10 @@ For gRPC, install the stack (`ext-grpc`, `grpc/grpc`, `google/protobuf`) and set
 ```env
 REMOTE_ELOQUENT_DRIVER=grpc
 REMOTE_ELOQUENT_GRPC_HOST=accounting.example.com:50051
+
+# TLS is off by default (fine for localhost / a private mesh). For any other
+# host enable it — the Bearer token travels in the call metadata.
+REMOTE_ELOQUENT_GRPC_SECURE=true
 ```
 
 The `QueryRequest`/`QueryResponse` protobuf classes **ship with the package** (namespace

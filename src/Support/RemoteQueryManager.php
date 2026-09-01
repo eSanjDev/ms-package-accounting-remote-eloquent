@@ -34,10 +34,11 @@ final class RemoteQueryManager
     }
 
     /**
-     * Run a raw SELECT and return just the rows (each an array<string,string>).
+     * Run a raw SELECT and return just the rows. Over gRPC every value is a
+     * string; over REST the JSON types (int/bool/null) survive as they are.
      *
      * @param  array<int, scalar|null>  $bindings
-     * @return list<array<string, string>>
+     * @return list<array<string, scalar|null>>
      */
     public function select(string $sql, array $bindings = []): array
     {

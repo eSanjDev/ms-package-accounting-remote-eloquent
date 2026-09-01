@@ -164,6 +164,11 @@ return [
     | ext-grpc + grpc/grpc + google/protobuf. Override them only to point at your
     | own generated classes. "timeout" is in seconds (0 = none).
     |
+    | "secure" enables TLS on the channel. It is off by default for localhost /
+    | private-network use; for any other host turn it on — the Bearer token
+    | travels in the call metadata and would otherwise cross the wire in
+    | cleartext.
+    |
     */
 
     'grpc' => [

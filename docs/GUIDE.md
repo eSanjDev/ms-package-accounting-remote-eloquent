@@ -270,6 +270,11 @@ step:
    ```
    Only set `REMOTE_ELOQUENT_GRPC_REQUEST` / `REMOTE_ELOQUENT_GRPC_RESPONSE` if you want to point at your own
    generated classes instead of the shipped ones.
+3. **Enable TLS outside trusted networks.** The channel is **insecure by default** (fine for localhost or a
+   private service mesh), and the Bearer token travels in its metadata — for any other host set:
+   ```env
+   REMOTE_ELOQUENT_GRPC_SECURE=true
+   ```
 
 If gRPC isn't fully wired, the transport fails **catchably** with a message telling you exactly what's missing
 (`ext-grpc`, `grpc/grpc`, or a message class). With fallback enabled (the default) the statement then goes over

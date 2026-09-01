@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Facade;
 
 /**
  * @method static QueryResult run(string $sql, array $bindings = [])
- * @method static array<int, array<string, string>> select(string $sql, array $bindings = [])
+ * @method static array<int, array<string, scalar|null>> select(string $sql, array $bindings = [])
  * @method static int affectingStatement(string $sql, array $bindings = [])
  * @method static TransportInterface transport()
  * @method static AccessTokenProviderInterface token()
