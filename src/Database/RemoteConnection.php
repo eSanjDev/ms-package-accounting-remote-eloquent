@@ -129,6 +129,11 @@ class RemoteConnection extends MySqlConnection
         return $this->lastInsertId;
     }
 
+    protected function getDefaultPostProcessor()
+    {
+        return new RemoteQueryProcessor;
+    }
+
     /**
      * {@inheritDoc}
      *
