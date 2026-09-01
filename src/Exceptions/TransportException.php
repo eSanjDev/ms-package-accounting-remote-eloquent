@@ -57,6 +57,18 @@ final class TransportException extends RemoteEloquentException
         );
     }
 
+    public static function misconfigured(string $transport, string $reason): self
+    {
+        $exception = new self(
+            "The {$transport} transport is misconfigured: {$reason}",
+            context: ['transport' => $transport, 'reason' => $reason],
+        );
+
+        $exception->dispatched = false;
+
+        return $exception;
+    }
+
     public static function grpcUnavailable(string $reason): self
     {
         $exception = new self(

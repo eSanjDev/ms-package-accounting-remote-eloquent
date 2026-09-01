@@ -118,7 +118,9 @@ return [
     |--------------------------------------------------------------------------
     |
     | Used when driver=rest. Statements are POSTed to {base_url}{query_path} with
-    | a Bearer token. "retries" only re-sends on genuine connection failures.
+    | a Bearer token. "retries" is the total number of attempts on connection
+    | failure, and applies to reads only — a write is never re-sent, because a
+    | timed-out INSERT/UPDATE may already have been applied server-side.
     |
     */
 

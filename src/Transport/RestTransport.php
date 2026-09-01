@@ -21,28 +21,28 @@ final class RestTransport implements TransportInterface
 {
     public function __construct(
         private readonly AccessTokenProviderInterface $token,
-        private readonly array                        $config,
-    )
-    {
-    }
+        private readonly array $config,
+    ) {}
 
     public function runQuery(string $sql, array $bindings): QueryResult
     {
         $payload = ['sql' => $sql, 'bindings' => $this->normalizeBindings($bindings)];
 
-        $response = $this->send($payload, forceFreshToken: false);
+        $retryable = FallbackPolicy::isRead($sql);
+
+        $response = $this->send($payload, forceFreshToken: false, retryable: $retryable);
 
         // The token may have been revoked server-side before its local expiry.
         if ($response->status() === 401) {
-            $response = $this->send($payload, forceFreshToken: true);
+            $response = $this->send($payload, forceFreshToken: true, retryable: $retryable);
         }
 
         return $this->toResult($response);
     }
 
-    private function send(array $payload, bool $forceFreshToken): Response
+    private function send(array $payload, bool $forceFreshToken, bool $retryable): Response
     {
-        $attempts = max((int)($this->config['retries'] ?? 1), 1);
+        $attempts = $retryable ? max((int) ($this->config['retries'] ?? 1), 1) : 1;
         $lastError = null;
 
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
@@ -64,8 +64,8 @@ final class RestTransport implements TransportInterface
     {
         return Http::acceptJson()
             ->asJson()
-            ->timeout((int)($this->config['timeout'] ?? 15))
-            ->connectTimeout((int)($this->config['connect_timeout'] ?? 5))
+            ->timeout((int) ($this->config['timeout'] ?? 15))
+            ->connectTimeout((int) ($this->config['connect_timeout'] ?? 5))
             ->withToken($this->bearer($forceFreshToken));
     }
 
@@ -76,11 +76,11 @@ final class RestTransport implements TransportInterface
         }
 
         if ($response->status() === 403) {
-            throw QueryAccessDeniedException::denied((string)$response->json('message', ''));
+            throw QueryAccessDeniedException::denied((string) $response->json('message', ''));
         }
 
         if ($response->status() === 422) {
-            throw InvalidQueryException::rejected((string)$response->json('message', ''));
+            throw InvalidQueryException::rejected((string) $response->json('message', ''));
         }
 
         if ($response->failed()) {
@@ -88,26 +88,26 @@ final class RestTransport implements TransportInterface
         }
 
         /** @var array<string, mixed> $data */
-        $data = (array)$response->json('data', []);
+        $data = (array) $response->json('data', []);
 
         return new QueryResult(
             rows: $this->normalizeRows($data['rows'] ?? []),
-            affectedRows: (int)($data['affected_rows'] ?? 0),
-            lastInsertId: isset($data['last_insert_id']) ? (string)$data['last_insert_id'] : null,
+            affectedRows: (int) ($data['affected_rows'] ?? 0),
+            lastInsertId: isset($data['last_insert_id']) ? (string) $data['last_insert_id'] : null,
         );
     }
 
     private function normalizeRows(mixed $rows): array
     {
-        if (!is_array($rows)) {
+        if (! is_array($rows)) {
             return [];
         }
 
         return array_values(array_map(static function ($row): array {
             $fields = [];
 
-            foreach ((array)$row as $key => $value) {
-                $fields[(string)$key] = $value === null || is_scalar($value)
+            foreach ((array) $row as $key => $value) {
+                $fields[(string) $key] = $value === null || is_scalar($value)
                     ? $value
                     : json_encode($value, JSON_UNESCAPED_UNICODE);
             }
@@ -119,7 +119,7 @@ final class RestTransport implements TransportInterface
     private function normalizeBindings(array $bindings): array
     {
         return array_values(array_map(static function ($binding) {
-            if (is_string($binding) && !mb_check_encoding($binding, 'UTF-8')) {
+            if (is_string($binding) && ! mb_check_encoding($binding, 'UTF-8')) {
                 return ['__b64' => base64_encode($binding)];
             }
 
@@ -129,16 +129,22 @@ final class RestTransport implements TransportInterface
 
     private function bearer(bool $forceFresh): string
     {
-        $access = $this->token->getAccessToken($forceFresh);
-
-        return $access;
+        return $this->token->getAccessToken($forceFresh);
     }
 
     private function url(): string
     {
-        $base = rtrim((string)($this->config['base_url'] ?? ''), '/');
-        $path = '/' . ltrim((string)($this->config['query_path'] ?? '/api/application/query'), '/');
+        $base = rtrim((string) ($this->config['base_url'] ?? ''), '/');
 
-        return $base . $path;
+        if ($base === '') {
+            throw TransportException::misconfigured(
+                'REST',
+                'base_url is not set — define REMOTE_ELOQUENT_BASE_URL (or ACCOUNTING_BRIDGE_BASE_URL).'
+            );
+        }
+
+        $path = '/'.ltrim((string) ($this->config['query_path'] ?? '/api/application/query'), '/');
+
+        return $base.$path;
     }
 }
