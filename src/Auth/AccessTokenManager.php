@@ -105,6 +105,10 @@ final class AccessTokenManager implements AccessTokenProviderInterface
     {
         $url = (string) ($this->config['token_url'] ?? '');
 
+        if (filter_var($url, FILTER_VALIDATE_URL) === false) {
+            throw TokenRequestException::invalidTokenUrl($url);
+        }
+
         try {
             $response = Http::asForm()->acceptJson()->post($url, $payload);
         } catch (ConnectionException $e) {
@@ -117,7 +121,13 @@ final class AccessTokenManager implements AccessTokenProviderInterface
             throw TokenRequestException::failed((string) $error, $response->status());
         }
 
-        return TokenData::fromArray((array) $response->json());
+        $token = TokenData::fromArray((array) $response->json());
+
+        if ($token->accessToken === '') {
+            throw TokenRequestException::malformedResponse();
+        }
+
+        return $token;
     }
 
     private function store(TokenData $token): TokenData

@@ -19,6 +19,22 @@ final class TokenRequestException extends RemoteEloquentException
         );
     }
 
+    public static function invalidTokenUrl(string $url): self
+    {
+        return new self(
+            "The OAuth token URL [{$url}] is not a valid URL. Set REMOTE_ELOQUENT_BASE_URL ".
+            '(or REMOTE_ELOQUENT_TOKEN_URL / ACCOUNTING_BRIDGE_BASE_URL).',
+            context: ['url' => $url],
+        );
+    }
+
+    public static function malformedResponse(): self
+    {
+        return new self(
+            'The OAuth token endpoint answered successfully but returned no access_token.'
+        );
+    }
+
     public static function connectionFailed(string $reason, ?Throwable $previous = null): self
     {
         return new self(
