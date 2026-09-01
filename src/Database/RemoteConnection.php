@@ -94,9 +94,7 @@ class RemoteConnection extends MySqlConnection
 
             $this->recordsHaveBeenModified();
 
-            if ($result->lastInsertId !== null) {
-                $this->lastInsertId = $result->lastInsertId;
-            }
+            $this->lastInsertId = $result->lastInsertId;
 
             return true;
         });
