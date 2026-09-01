@@ -15,10 +15,6 @@
         "illuminate/http": "^11.0|^12.0|^13.0",
         "illuminate/support": "^11.0|^12.0|^13.0"
     },
-    "require-dev": {
-        "orchestra/testbench": "^9.0|^10.0|^11.0",
-        "phpunit/phpunit": "^10.0|^11.0|^12.0"
-    },
     "suggest": {
         "ext-grpc": "Required for the gRPC transport (REMOTE_ELOQUENT_DRIVER=grpc).",
         "grpc/grpc": "Provides the \\Grpc\\BaseStub client used by the gRPC transport.",
@@ -28,11 +24,6 @@
     "autoload": {
         "psr-4": {
             "Esanj\\RemoteEloquent\\": "src/"
-        }
-    },
-    "autoload-dev": {
-        "psr-4": {
-            "Esanj\\RemoteEloquent\\Tests\\": "tests/"
         }
     },
     "extra": {
