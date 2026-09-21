@@ -1,11 +1,8 @@
-# 📚 Remote Eloquent — Complete Guide
+# Remote Eloquent — Complete Guide
 
-This guide assumes you have **never used this package**. It explains, step by step, how to make a Laravel service
-read and write the **Accounting** database through plain Eloquent — without a local copy of those tables.
-
-> 💡 **What is this?** Normally an Eloquent model talks to *your* database through PDO. Remote Eloquent swaps that
-> PDO for a network transport: your query is compiled to SQL and sent to the Accounting service (over gRPC or
-> REST), which runs it and sends the rows back. Your models hydrate from those rows exactly as usual.
+This guide assumes you have never used the package. It explains how to make a Laravel service read and write
+accounts in the **Esanj Accounting** service through ordinary Eloquent, and — just as importantly — what it will
+refuse to do and what to write instead.
 
 ---
 
@@ -14,615 +11,1058 @@ read and write the **Accounting** database through plain Eloquent — without a 
 1. [The big picture](#1-the-big-picture)
 2. [Requirements](#2-requirements)
 3. [Installation](#3-installation)
-4. [Configuration & `.env`](#4-configuration--env)
+4. [Configuration and `.env`](#4-configuration-and-env)
 5. [Your first remote model](#5-your-first-remote-model)
-6. [Reading data](#6-reading-data)
-7. [Writes & the insert-id caveat](#7-writes--the-insert-id-caveat)
-7b. [Transactions and atomicity](#7b-transactions-and-atomicity)
-8. [Choosing a transport: REST vs gRPC](#8-choosing-a-transport-rest-vs-grpc)
-   - [Automatic fallback between transports](#automatic-fallback-between-transports)
-9. [How token caching works](#9-how-token-caching-works)
-10. [Raw queries with the `RemoteQuery` facade](#10-raw-queries-with-the-remotequery-facade)
-11. [What you can and can't query](#11-what-you-can-and-cant-query)
-12. [How authorization works on the server](#12-how-authorization-works-on-the-server)
-13. [Error handling](#13-error-handling)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Cheat sheet](#15-cheat-sheet)
+6. [The QuerySpec: what your builder becomes](#6-the-queryspec-what-your-builder-becomes)
+7. [Reading data](#7-reading-data)
+8. [Pagination in one request](#8-pagination-in-one-request)
+9. [Walking a large result set](#9-walking-a-large-result-set)
+10. [Relations across the boundary](#10-relations-across-the-boundary)
+11. [Writes, idempotency and stale records](#11-writes-idempotency-and-stale-records)
+12. [Soft deletes](#12-soft-deletes)
+13. [Domain actions](#13-domain-actions)
+14. [Validation](#14-validation)
+15. [The auth guard](#15-the-auth-guard)
+16. [Acting for a user](#16-acting-for-a-user)
+17. [Permissions and quota](#17-permissions-and-quota)
+18. [Error handling](#18-error-handling)
+19. [Rate limits in queued jobs](#19-rate-limits-in-queued-jobs)
+20. [Testing](#20-testing)
+21. [Artisan commands](#21-artisan-commands)
+22. [Performance](#22-performance)
+23. [Everything it refuses](#23-everything-it-refuses)
+24. [Troubleshooting](#24-troubleshooting)
+25. [Cheat sheet](#25-cheat-sheet)
 
 ---
 
 ## 1. The big picture
 
+A normal Eloquent model talks to your database through PDO. A remote model has **no database and no PDO**. Its
+builder is translated into a **QuerySpec** — a structured description of fields, conditions, ordering and paging
+— and posted to a resource API that Accounting owns.
+
 ```
-Your service                       Remote Eloquent                     Accounting
-   User::find(7)  ------------->  compile to SQL + bindings
-                                  attach cached Bearer token
-                                  send {sql, bindings}  ------------->  check the app owns USER_LIST
-                                                                        run: select * from `users` where id = 7
-                                  hydrate model  <-------------------   return rows (as strings)
+Your service                       Remote Eloquent                       Accounting
+  User::query()
+      ->where('is_active', true)
+      ->limit(20)->get()   ----->  translate to a QuerySpec
+                                   attach the app token (+ the user token)
+                                   attach X-Request-Id, Accept-Language
+                                       POST users/query {spec}  -------->  check the permission
+                                                                           apply row-level tenancy
+                                                                           validate every field + operator
+                                                                           run it (MySQL or PostgreSQL)
+                                       <----- {data, meta, schema_version}
+  Collection<User>         <-----  hydrate, cast, fire events
 ```
 
-Your job is small: **extend `RemoteModel`, set the table, declare casts.** Everything else is normal Eloquent.
+### The two rules
+
+**1. The server decides what is legal.** The client never builds SQL. It cannot widen what Accounting allows, and
+the fields a resource publishes are its whole surface — a column that exists in the table but is not in the
+contract cannot be named, filtered on, or returned.
+
+**2. Nothing is ever dropped silently.** If the package cannot express something, it throws *before* the request
+is made and the message names the supported alternative. A dropped `where` returns the wrong rows and looks like
+a success, which is the worst failure a data layer has.
+
+### What version 2 replaced
+
+Version 1 compiled Eloquent to a MySQL SQL string and sent it over. Accounting vetted the string with regular
+expressions. That made its table layout a public API, bypassed every domain rule that was not expressible as a
+regex, broke on PostgreSQL, and — through a "fallback" transport — replayed failed writes and rate-limited calls
+on a second channel. All of that is gone. The connection class in 2.0 throws on `select()`, so there is no code
+path left that can run a compiled string.
 
 ---
 
 ## 2. Requirements
 
-- PHP 8.2+, Laravel 11–13.
-- The Accounting service reachable over REST (a base URL) and/or gRPC (`host:port`).
-- An OAuth **client id + secret** issued by Accounting (the same pair `esanj/auth-bridge` uses is fine).
-- **Only if you choose gRPC:** `ext-grpc`, plus the `grpc/grpc` and `google/protobuf` composer packages (the
-  message classes ship with this package — section 8). REST needs none of these.
+- PHP 8.2+
+- Laravel 11, 12 or 13
+- Credentials for the Accounting service (an OAuth client id and secret)
+- `firebase/php-jwt` ^6.0 **only if** you use the `accounting` auth guard
+- `esanj/auth-bridge` if the signed-in user's own token should travel with writes
 
 ---
 
 ## 3. Installation
 
-Add a path repository to the consuming service and require the package:
-
 ```bash
 composer require esanj/remote-eloquent
-php artisan vendor:publish --tag="esanj-remote-eloquent-config"   # optional
-php artisan config:clear
 ```
 
-The provider (`Esanj\RemoteEloquent\RemoteEloquentServiceProvider`) and the `RemoteQuery` facade auto-discover. The
-package registers a database connection named `remote` for you.
+The service provider is discovered automatically. It registers:
+
+- the `remote-eloquent` connection (so you do **not** edit `config/database.php`),
+- `ResourceTransport` and its OAuth token providers,
+- the schema repository and validator,
+- the `accounting` auth guard and the `remote` user provider,
+- the presence verifier behind `Rule::exists()` / `Rule::unique()`,
+- four artisan commands,
+- `Model::preventLazyLoading()` outside production.
+
+Publish the config only to change it:
+
+```bash
+php artisan vendor:publish --tag=esanj-remote-eloquent-config
+# -> config/esanj/remote_eloquent.php, read as config('esanj.remote_eloquent.*')
+```
 
 ---
 
-## 4. Configuration & `.env`
+## 4. Configuration and `.env`
 
-The only things you *must* provide are where Accounting is and how to authenticate. Both default to the
-`esanj/auth-bridge` variables, so if this service already logs into Accounting you may only need the driver line.
+Everything defaults to the `ACCOUNTING_BRIDGE_*` variables a service talking to Accounting already has.
 
-```env
-REMOTE_ELOQUENT_BASE_URL=https://accounting.example.com      # or leave unset to reuse ACCOUNTING_BRIDGE_BASE_URL
-REMOTE_ELOQUENT_CLIENT_ID=your-client-id                     # or reuse ACCOUNTING_BRIDGE_CLIENT_ID
-REMOTE_ELOQUENT_CLIENT_SECRET=your-client-secret             # or reuse ACCOUNTING_BRIDGE_CLIENT_SECRET
-REMOTE_ELOQUENT_DRIVER=rest                                  # rest (default) | grpc
-REMOTE_ELOQUENT_FALLBACK=true                                # replay on the other transport when this one is down
+```dotenv
+REMOTE_ELOQUENT_DRIVER=rest
+REMOTE_ELOQUENT_PREFIX=/api/remote/v1
+REMOTE_ELOQUENT_TIMEOUT=5
+REMOTE_ELOQUENT_CONNECT_TIMEOUT=2
+REMOTE_ELOQUENT_CLIENT_VERSION=2.0
+REMOTE_ELOQUENT_MAX_LIMIT=100
+REMOTE_ELOQUENT_IN_CHUNK=500
+REMOTE_ELOQUENT_IDENTITY_MAP=true
+REMOTE_ELOQUENT_SCHEMA_TTL=3600
+REMOTE_ELOQUENT_ACCESS_TTL=600
+REMOTE_ELOQUENT_CALL_WARNING_THRESHOLD=20
+REMOTE_ELOQUENT_RENDER_ERRORS=true
+
+# Optional, and off by default:
+# REMOTE_ELOQUENT_BASE_URL=https://auth.esanj.io        # else ACCOUNTING_BRIDGE_BASE_URL
+# REMOTE_ELOQUENT_CLIENT_ID=                            # else ACCOUNTING_BRIDGE_CLIENT_ID
+# REMOTE_ELOQUENT_CLIENT_SECRET=                        # else ACCOUNTING_BRIDGE_CLIENT_SECRET
+# REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL=
+# REMOTE_ELOQUENT_CACHE_STORE=
+# REMOTE_ELOQUENT_LOG_CHANNEL=
 ```
 
-> ⚠️ Run `php artisan config:clear` after editing `.env`.
+| Key | Default | What it is |
+| --- | --- | --- |
+| `driver` | `rest` | The transport. `fake` is the in-memory one used by tests. |
+| `rest.base_url` | `ACCOUNTING_BRIDGE_BASE_URL` | The account service. |
+| `rest.prefix` | `/api/remote/v1` | Every endpoint lives under it. |
+| `rest.timeout` / `rest.connect_timeout` | 5 / 2 s | Deliberately short. A page already waiting on a hop should fail fast. |
+| `rest.client_version` | `2.0` | Sent as `X-Client-Version`, so the server can flag a client too old for a schema. |
+| `rest.headers` | `[]` | Extra headers on every call. `Authorization`, `Actor-Authorization` and `Idempotency-Key` are built by the transport and cannot be overridden. |
+| `auth.*` | `ACCOUNTING_BRIDGE_*` | The application's own OAuth client-credentials identity. |
+| `auth.refresh_buffer_seconds` | 60 | The token is dropped this long before it expires, so a call never leaves with one that expires in flight. |
+| `actor.exchange_url` | `null` | Unset means actor tokens are off — the documented opt-out. |
+| `actor.ttl` | 60 s | An actor token only has to survive the request that produced it. |
+| `limits.max_query_limit` | 100 | The largest page. |
+| `limits.in_chunk` | 500 | The longest `in` list one request may carry. A longer `whereIn()` is split and merged; a list that cannot be split is refused with the reason. |
+| `cache.identity_map` | `true` | Per-request memo of records fetched by id. |
+| `cache.find_ttl` | 0 | Records are **not** cached across requests, on purpose. |
+| `cache.schema_ttl` / `cache.access_ttl` | 3600 / 600 s | The descriptive endpoints. |
+| `errors.render` | `true` | Let the package's exceptions answer the browser. |
+| `telemetry.call_warning_threshold` | 20 | Warn once a request passes this many remote calls. |
+| `fallback` | `false` | Not configurable. See §1. |
 
-Every option (timeouts, token cache store & buffer, connection name, table prefix, gRPC host & message classes)
-is documented in [`src/config/remote_eloquent.php`](../src/config/remote_eloquent.php).
+Then:
+
+```bash
+php artisan remote:doctor
+```
 
 ---
 
 ## 5. Your first remote model
 
-Create a model that extends `RemoteModel` and points at a **remote** table name:
-
 ```php
 <?php
 
-namespace App\Models\Remote;
+declare(strict_types=1);
 
-use Esanj\RemoteEloquent\Eloquent\RemoteModel;
+namespace App\Models;
 
-class User extends RemoteModel
+use Esanj\RemoteEloquent\Models\ApiModel;
+
+class Wallet extends ApiModel
 {
-    protected $table = 'users';     // the table name ON the Accounting database
-    protected $guarded = [];
+    protected string $resource = 'wallets';
+    protected $connection = 'remote-eloquent';
 
-    // Remote values arrive as strings. Casts turn them back into real types.
-    protected $casts = [
-        'id' => 'int',
-        'is_admin' => 'bool',
-        'email_verified_at' => 'datetime',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
-    ];
+    protected $fillable = ['label'];
+
+    protected function casts(): array
+    {
+        return ['balance' => 'decimal:2', 'created_at' => 'datetime'];
+    }
 }
 ```
 
-That's the whole setup. There is **no migration** — the table lives in Accounting, not here.
-
-> 💡 **Always declare `$casts`.** Without them, `id` would be the string `"7"`, `is_admin` the string `"1"`, and
-> timestamps plain strings. With them, Eloquent hydrates `int`, `bool` and `Carbon` as you'd expect.
-
----
-
-## 6. Reading data
-
-Everything that compiles to a single-table `SELECT` works — which is almost the entire read API:
-
-```php
-User::find(7);
-User::findOrFail(7);
-User::where('email', 'ada@example.com')->first();
-User::where('is_admin', true)->orderByDesc('id')->limit(20)->get();
-User::whereIn('id', [1, 2, 3])->pluck('email');
-User::where('email', 'like', '%@example.com')->exists();
-User::count();                       // aggregate
-User::query()->paginate(15);         // runs a count() then a limited select
-```
-
-Each call becomes one SQL statement and one round-trip. Bindings are sent separately (parameterized), so values are
-never string-interpolated into SQL.
-
----
-
-## 7. Writes & the insert-id caveat
-
-Updates and deletes are fully supported and return the affected row count:
-
-```php
-User::where('id', 7)->update(['name' => 'Ada L.']);   // => 1
-User::where('id', 7)->delete();                        // => 1
-$user->update(['name' => 'Ada L.']);
-$user->delete();
-```
-
-Inserts run too — the row **is** created:
-
-```php
-User::create(['name' => 'Grace', 'email' => 'grace@example.com']);
-```
-
-`create()` on an auto-increment model returns the real key: Accounting reports the id as `data.last_insert_id`
-over REST and `QueryResponse.last_insert_id` over gRPC, and `RemoteConnection::getLastInsertId()` hands it to
-Eloquent exactly as a local PDO would.
-
-```php
-$user = User::create(['name' => 'Grace']);
-$user->id;        // 4242
-$user->update(['status' => 'active']);   // update ... where `id` = ?   ✔
-```
-
-**Against an Accounting deployment that predates this contract**, no id comes back. The package then **throws**
-`RemoteConnectionException` from `getLastInsertId()` rather than handing you a model with a null key:
-
-```
-The insert succeeded but Accounting returned no last_insert_id, so the model has no key. …
-```
-
-That is deliberate. A null key is not a missing convenience — the row *is* created, but every later `save()` and
-`delete()` on that model compiles to ``where `id` is null``, matches nothing, and reports success. A loud failure at
-the insert beats a silent no-op three lines later.
-
-So when you talk to such a server, **client-generated keys are required, not merely recommended**, for any model
-you create remotely:
-
-```php
-use Illuminate\Database\Eloquent\Concerns\HasUuids;
-
-class Token extends RemoteModel
-{
-    use HasUuids;
-    protected $table = 'tokens';
-}
-
-$token = Token::create([...]);   // $token->id is the UUID your app generated — no server round trip
-```
-
-A UUID/ULID model never asks for an insert id, so it is unaffected either way. Bulk inserts
-(`Model::insert([...])`, `DB::table()->insert()`) never ask for one either and keep working.
-
----
-
-## 7b. Transactions and atomicity
-
-**There are none, and the connection says so out loud.** Each statement is its own call to Accounting; there is no
-session holding an open transaction and nothing to roll back. So `transaction()`, `beginTransaction()`, `commit()`
-and `rollBack()` all throw `RemoteConnectionException`:
-
-```php
-DB::connection('accounting')->transaction(function () {
-    RemoteAccount::where('id', 1)->decrement('balance', 1000);
-    RemoteAccount::where('id', 2)->increment('balance', 1000);
-});
-// RemoteConnectionException: The remote connection has no real transaction …
-```
-
-Before, that block ran without atomicity and without a word: if the second statement failed, the first stayed
-applied and `transactionLevel()` still read `0`, so nothing anywhere suggested a problem. On an accounting
-database that is a half-finished transfer. The exception fires **before** the first statement is sent, so nothing
-is written.
-
-**What to do instead**, in order of preference:
-
-1. **Put the whole operation behind one Accounting endpoint** that opens a local transaction there. This is the
-   only way to get real atomicity, and it is the right shape for anything money-related.
-2. **Write a compensating action** — perform step two, and on failure issue the statement that undoes step one.
-   Weaker, but honest about what it is.
-3. **Restructure so a single statement is enough** (one `UPDATE … SET balance = balance - ?` rather than a read
-   then a write).
-
-**The escape hatch.** `REMOTE_ELOQUENT_ALLOW_UNSAFE_TRANSACTIONS=true` restores the old behaviour: the callback
-just runs, with no atomicity at all. Use it only when every such block is a single statement, or is safe to leave
-partially applied.
-
-> ⚠️ `saveOrFail()`, `updateOrFail()` and `deleteOrFail()` call `transaction()` internally, so they throw too. Each
-> wraps a single statement, which a database is already atomic about, so use `save()` / `update()` / `delete()` —
-> or turn the flag on. Ordinary reads and writes, `paginate()`, `updateOrCreate()` and eager loading never open a
-> transaction and are unaffected: `transactionLevel()` stays `0`, which is what keeps Eloquent's
-> `withSavepointIfNeeded()` from routing them through `transaction()`.
-
----
-
-## 8. Choosing a transport: REST vs gRPC
-
-Both speak the **same contract** — `{sql, bindings}` → `{rows, affected_rows}` — so your models behave identically
-either way. Pick per environment with `REMOTE_ELOQUENT_DRIVER`.
-
-### REST (default, recommended to start)
-
-Nothing to install. It POSTs to `{REMOTE_ELOQUENT_BASE_URL}/api/application/query` with a Bearer token. Done.
-
-### gRPC
-
-Faster and lighter on the wire. The protobuf message classes **ship with the package**, so there is no `protoc`
-step:
-
-1. **Install the stack** in the consuming service:
-   ```bash
-   pecl install grpc          # or enable ext-grpc in php.ini
-   composer require grpc/grpc google/protobuf
-   ```
-2. **Configure** — the host is all you need; `request_class`/`response_class` already default to the shipped
-   `Esanj\RemoteEloquent\Grpc\QueryRequest` / `QueryResponse`:
-   ```env
-   REMOTE_ELOQUENT_DRIVER=grpc
-   REMOTE_ELOQUENT_GRPC_HOST=accounting.example.com:50051
-   ```
-   Only set `REMOTE_ELOQUENT_GRPC_REQUEST` / `REMOTE_ELOQUENT_GRPC_RESPONSE` if you want to point at your own
-   generated classes instead of the shipped ones.
-3. **Enable TLS outside trusted networks.** The channel is **insecure by default** (fine for localhost or a
-   private service mesh), and the Bearer token travels in its metadata — for any other host set:
-   ```env
-   REMOTE_ELOQUENT_GRPC_SECURE=true
-   ```
-
-If gRPC isn't fully wired, the transport fails **catchably** with a message telling you exactly what's missing
-(`ext-grpc`, `grpc/grpc`, or a message class). With fallback enabled (the default) the statement then goes over
-REST and a warning is logged — you keep serving traffic, and the log tells you what to install.
-
-### Per-model transport override
-
-`REMOTE_ELOQUENT_DRIVER` is the default for **every** model. To make one model use a different transport, set
-`$transport` on it:
-
-```php
-class Ledger extends RemoteModel
-{
-    protected $table = 'ledgers';
-    protected $transport = 'grpc';   // always gRPC, even when the default is rest
-}
-```
-
-- Accepted values: `'rest'` and `'grpc'`. Any other value throws `InvalidArgumentException` (with the offending
-  model and value) as soon as the model resolves its connection.
-- Each transport gets its own auto-registered connection — `remote` (default), `remote_rest`, `remote_grpc` — so a
-  gRPC model and a REST model never share a connection, cached token pipe, or transport instance.
-- Need to decide at runtime (e.g. per environment or feature flag)? Override the method form instead:
-
-  ```php
-  public function getTransportName(): ?string
-  {
-      return app()->environment('production') ? 'grpc' : 'rest';
-  }
-  ```
-
-  Return `null` to fall back to the configured default.
-
-An explicit `$connection` on the model still takes precedence over `$transport` (for advanced multi-endpoint
-setups where you register your own connections).
-
-### Automatic fallback between transports
-
-Picking a transport does not mean betting the service on it. When the transport a statement runs on turns out to be
-**unreachable, misconfigured, or answering with an unexpected status**, the statement is replayed on the other one:
-
-```
-User::find(7)  --> rest    ✗  connection refused
-                            ↓  (warning logged)
-               --> grpc    ✓  rows come back — your code never noticed
-```
-
-It is **on by default**. One env var turns it off everywhere:
-
-```env
-REMOTE_ELOQUENT_FALLBACK=false
-```
-
-The chain is symmetric out of the box (`rest → grpc`, `grpc → rest`) and lives in
-[`src/config/remote_eloquent.php`](../src/config/remote_eloquent.php) under `fallback.chain`.
-
-#### What falls back, and what does not
-
-The fallback replaces a **broken pipe**, never a valid answer. So:
-
-| Failure | Falls back? | Why |
-|---|---|---|
-| Connection refused / timed out | ✅ | The transport is down; the other one may be up. |
-| Unexpected status (5xx, 404, …) | ✅ | Often a misconfigured endpoint. |
-| gRPC stack missing (`ext-grpc`, message classes) | ✅ | Nothing was ever sent. |
-| `InvalidQueryException` (422 — rejected SQL) | ❌ | A server verdict. gRPC rejects the same statement. |
-| `QueryAccessDeniedException` (403 — missing feature) | ❌ | Authorization is transport-agnostic. |
-| `TokenRequestException` | ❌ | Both transports use the same token issuer. |
-
-#### Writes are treated more strictly
-
-A REST `INSERT` that **timed out** may well have been applied on the server — the response just never arrived.
-Replaying it over gRPC would insert the row twice. So `INSERT`/`UPDATE`/`DELETE` do **not** fall back by default.
-They still do when the failure provably happened *before* anything left your process (a missing gRPC stack, for
-example), because there is nothing to double-apply.
-
-If your writes are idempotent and you would rather have availability, opt in:
-
-```env
-REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES=true
-```
-
-> ⚠️ On an accounting database, think twice. A duplicated `UPDATE ... SET balance = balance + ?` is worse than a
-> failed request.
-
-#### Turning fallback off for one model
-
-Some tables should never move quietly between transports — you want the failure, not a detour. Set
-`$transportFallback` on that model:
-
-```php
-class User extends RemoteModel
-{
-    protected $table = 'users';
-    protected $transportFallback = false;   // always this model's own transport, or an error
-}
-```
-
-- `false` — never fall back, whatever the global setting says.
-- `true` — always fall back, even when `REMOTE_ELOQUENT_FALLBACK=false`.
-- `null` (the default) — follow the package setting.
-- Combine it with `$transport` freely: `$transport = 'grpc'` + `$transportFallback = false` means *gRPC or nothing*.
-- Dynamic decisions: override `getTransportFallback(): ?bool` instead.
-
-Each combination has its own auto-registered connection (`remote_nofallback`, `remote_grpc_fallback`, …), so a
-pinned model and a failing-over model never share a transport instance.
-
-#### Observability
-
-Every handover logs a warning — a fallback that hides an outage is worse than the outage:
-
-```
-[warning] remote-eloquent: the [rest] transport failed, retrying on [grpc].
-          {"transport":"rest","fallback":"grpc","reason":"Could not reach the Accounting service over REST: ..."}
-```
-
-Send it somewhere you watch with `REMOTE_ELOQUENT_FALLBACK_LOG_CHANNEL=slack`, or silence it with
-`REMOTE_ELOQUENT_FALLBACK_LOG=false`.
-
-When **every** transport in the chain fails, you get one `TransportException` naming each attempt, with the primary
-failure kept as `getPrevious()` and the per-transport reasons in `getContext()['attempts']`:
-
-```
-Every transport failed for this statement — rest: Could not reach the Accounting service over REST: cURL error 7…;
-grpc: The gRPC transport is unavailable: the ext-grpc PHP extension is not installed.
-```
-
-> ⏱️ **A note on latency.** A fallback costs the primary transport's full timeout before the second attempt starts.
-> While REST is down, every query pays `REMOTE_ELOQUENT_REST_TIMEOUT` (15s by default) on top of the gRPC call.
-> Keep that timeout tight if you rely on fallback under load.
-
----
-
-## 9. How token caching works
-
-You configure a client id/secret once; the package handles tokens for you:
-
-- On the first query it requests an access token with the **client-credentials** grant and **caches** it (keyed by
-  client id + scope). Subsequent queries reuse the cached token — no token round-trip per query.
-- When the cached token is within `cache_buffer_seconds` (default 60) of expiring, it is refreshed automatically:
-  via the **refresh-token** grant if the server issued a refresh token, otherwise by requesting a fresh
-  client-credentials token. Your queries never fail because a 15-minute token lapsed.
-- If Accounting rejects a token mid-flight (HTTP 401 / gRPC `UNAUTHENTICATED`), the package drops the cached token
-  and retries once with a fresh one.
-
-Force a re-auth yourself with `RemoteQuery::forgetToken()`.
-
----
-
-## 10. Raw queries with the `RemoteQuery` facade
-
-When you want the remote pipe without a model:
-
-```php
-use Esanj\RemoteEloquent\Facades\RemoteQuery;
-
-// Returns list<array<string,string>>
-$rows = RemoteQuery::select('select * from `users` where `id` = ?', [7]);
-
-// Returns the affected row count
-RemoteQuery::affectingStatement('update `users` set `name` = ? where `id` = ?', ['Ada', 7]);
-
-// Full result object ({rows, affectedRows, lastInsertId})
-$result = RemoteQuery::run('select count(*) as c from `users`');
-
-// The underlying connection / cached token
-RemoteQuery::connection();     // Illuminate\Database\ConnectionInterface
-RemoteQuery::forgetToken();
-```
-
-The same single-table + feature-gate rules below apply to raw queries.
-
----
-
-## 11. What you can and can't query
-
-The Accounting server only accepts **one single-table statement at a time**. Remote Eloquent passes these limits
-straight through:
-
-| ✅ Works | ❌ Rejected (`InvalidQueryException`) |
-|---|---|
-| `select`, `insert`, `update`, `delete` on one table | `JOIN`, `UNION` |
-| `where`, `whereIn`, `orderBy`, `groupBy`, `having`, `limit`, `offset` | Multiple tables in one statement |
-| aggregates, `paginate`, `pluck`, `exists` | Stacked statements (`;`) or SQL comments |
-
-To combine data across tables, run separate queries and join in PHP (e.g. fetch users, then fetch their wallets by
-id). Eager-loading a relation that lives in the **same** remote database works when each relation query is itself
-single-table.
-
-Two data-fidelity notes:
-
-- **Strings in, casts out.** Over gRPC a row is a `map<string, string>`, so every non-NULL column comes back as a
-  string — always declare `$casts` (section 5). Over REST the JSON types (`int`, `float`, `bool`) survive intact.
-- **`NULL` stays `NULL`, both directions.** A `NULL` column reads back as `null`, so `is_null()`, `?? $default`,
-  `SoftDeletes` and nullable casts all work normally — and writing `null` stores a real `NULL`. REST carries `null`
-  natively. gRPC cannot put a `NULL` in a string map or a string list, so it sends the positions alongside:
-  `DataRow.null_fields` names the columns that are really `NULL` on the way back, and `QueryRequest.null_bindings`
-  carries the indexes of the null bindings on the way out; each side restores them. **Both need an Accounting
-  deployment that speaks these fields**; against an older server a `NULL` read still arrives as `''` and a `NULL`
-  write still stores `''` (the previous behaviour) rather than erroring.
-
----
-
-## 12. How authorization works on the server
-
-You cannot query anything you like — Accounting authorizes **every** statement against your application's
-capability features, per `table.operation`. On the server this lives in `config/query.php`, e.g.:
-
-```
-users.select  => USER_LIST
-users.insert  => USER_CREATE
-users.update  => USER_UPDATE
-users.delete  => USER_DELETE
-clients.select => CLIENT_LIST
-```
-
-If your application owns `USER_LIST` it may `SELECT` from `users` and nothing else; a `DELETE` would throw
-`QueryAccessDeniedException` (403 / `PERMISSION_DENIED`). Ask an Accounting admin to grant the features your
-service needs. Anything not mapped is denied by default.
-
----
-
-## 13. Error handling
-
-```php
-use Esanj\RemoteEloquent\Exceptions\InvalidQueryException;
-use Esanj\RemoteEloquent\Exceptions\QueryAccessDeniedException;
-use Esanj\RemoteEloquent\Exceptions\TokenRequestException;
-use Esanj\RemoteEloquent\Exceptions\TransportException;
-
-try {
-    $users = User::where('is_admin', true)->get();
-} catch (QueryAccessDeniedException $e) {   // 403 — missing capability feature
-} catch (InvalidQueryException $e) {        // 422 — statement rejected (JOIN, multi-table, comment…)
-} catch (TokenRequestException $e) {        // could not obtain/refresh the access token
-} catch (TransportException $e) {           // connection/auth/unexpected status
-}
-```
-
-All extend `RemoteEloquentException` (with `getContext()`), and are thrown **unwrapped** — you catch the specific type
-directly, not a generic `QueryException`.
-
----
-
-## 14. Troubleshooting
-
-**`QueryAccessDeniedException: Running a select on "users" is not exposed` / `...not allowed to...`.**
-Your application doesn't own the required feature (or the `table.operation` isn't mapped on the server). Grant the
-feature in the Accounting panel.
-
-**`InvalidQueryException: JOIN and UNION queries are not supported`.**
-Your Eloquent query compiled to a multi-table statement (often an eager-load across tables or a `whereHas`). Split
-it into single-table queries.
-
-**Everything is a string / dates aren't `Carbon`.**
-Declare `$casts` on the model.
-
-**A `NULL` column reads as `''`, `0` or "now" — or writing `null` stores `''`.**
-The Accounting deployment you are talking to predates the `null_fields` / `null_bindings` contract, so it cannot
-signal `NULL` over gRPC in either direction. Upgrade Accounting; until then a `datetime` cast on a nullable column
-produces `Carbon::now()` and `trashed()` returns `true` for live rows, and a write of `null` lands as `''` — a 1292
-under MySQL strict mode, a `0000-00-00 00:00:00` without it. Against such a server, use
-`REMOTE_ELOQUENT_DRIVER=rest`, which has always carried `null` correctly.
-
-**`TransportException: The gRPC transport is unavailable ...`.**
-Install `ext-grpc` + `grpc/grpc` + `google/protobuf` (the message classes ship with the package, so no `protoc`
-step is needed). Or switch back to `REMOTE_ELOQUENT_DRIVER=rest`.
-
-**`TransportException: Every transport failed for this statement — rest: …; grpc: …`.**
-Fallback did its job and both transports were unreachable. The message names what each one hit — usually a wrong
-`REMOTE_ELOQUENT_BASE_URL` / `REMOTE_ELOQUENT_GRPC_HOST`, or Accounting genuinely being down. `getContext()['attempts']`
-has the same breakdown as an array.
-
-**A model keeps switching transport and I don't want it to.**
-Set `protected $transportFallback = false;` on it (section 8), or turn fallback off service-wide with
-`REMOTE_ELOQUENT_FALLBACK=false`.
-
-**My write failed instead of falling back.**
-That is deliberate: a write that may already have reached the server is never replayed elsewhere, or it could apply
-twice. Enable `REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES=true` only if your writes are idempotent (section 8).
-
-**`TokenRequestException: client credentials are not configured`.**
-Set `REMOTE_ELOQUENT_CLIENT_ID` / `REMOTE_ELOQUENT_CLIENT_SECRET` (or the `ACCOUNTING_BRIDGE_*` equivalents), then
-`php artisan config:clear`.
-
-**`RemoteConnectionException: The insert succeeded but Accounting returned no last_insert_id`.**
-The row was created, but the Accounting deployment predates the `last_insert_id` contract so the model has no key.
-Upgrade Accounting, or give the model `HasUuids`/`HasUlids` (section 7). The package throws here on purpose: the
-alternative is a model whose every later `save()`/`delete()` silently matches no rows.
-
-**`RemoteConnectionException: The remote connection has no real transaction`.**
-Something called `DB::transaction()` / `beginTransaction()` on the remote connection — often indirectly through
-`saveOrFail()`, `updateOrFail()` or `deleteOrFail()`. There is no atomicity to give, so it fails instead of
-pretending (section 7b). Use the plain `save()`/`update()`/`delete()`, move the operation into one Accounting
-endpoint, or set `REMOTE_ELOQUENT_ALLOW_UNSAFE_TRANSACTIONS=true` to accept a non-atomic block.
-
-**Writing a BLOB / raw bytes.**
-Over REST it works: a binding that is not valid UTF-8 is wrapped as `{"__b64": "..."}` and unwrapped on the
-server, so `json_encode` no longer fails on the payload. Over **gRPC it does not** — `repeated string bindings`
-is a protobuf `string`, which must be valid UTF-8, so serialization throws `Expect utf-8 encoding`. Use
-`REMOTE_ELOQUENT_DRIVER=rest` for models with binary columns, or base64 the column in your own code. **Reading**
-a binary column is not supported on either transport: the REST response cannot `json_encode` the raw bytes.
-
-**Config changes ignored.** `php artisan config:clear` (and re-cache in production).
-
----
-
-## 15. Cheat sheet
+- **`$resource`** is the only required piece. It is what the API calls the collection, and `getTable()` answers
+  it too, so a local model's `belongsTo(Wallet::class)` still derives `wallet_id` the usual way.
+- **`$connection`** is not used to open anything — `getConnection()` always returns the hollow `ApiConnection` —
+  but `Rule::exists(Wallet::class)` reads it to tell a remote resource from a local table. Set it.
+- **`$fillable`** should be exactly the writable fields. Anything else becomes `400 field_not_writable`.
+- **`$timestamps` is off** and `created_at` / `updated_at` are stripped from every write. The server stamps its
+  own rows; sending your clock writes a time from a different machine than the rest of the data.
+
+Extend **`ApiUser`** instead for the resource behind the auth guard — it adds Laravel's `Authenticatable` and
+`Authorizable` contracts.
+
+### Let the schema write it
 
 ```bash
-composer require esanj/remote-eloquent
-php artisan vendor:publish --tag="esanj-remote-eloquent-config"
-php artisan config:clear
+php artisan remote:model wallets
+php artisan remote:model users --auth
+```
+
+and keep it honest in CI:
+
+```bash
+php artisan remote:schema users --diff      # non-zero exit when the model has drifted
+```
+
+Casts, accessors, mutators, `$appends`, `$hidden`, `$fillable`/`$guarded`, model events and local relations all
+behave exactly as on a normal model.
+
+---
+
+## 6. The QuerySpec: what your builder becomes
+
+Useful to know, because every error message speaks in these terms.
+
+```json
+{
+  "fields": ["id", "first_name"],
+  "where": [
+    {"boolean": "and", "not": false, "field": "is_active", "op": "eq", "value": true},
+    {"boolean": "and", "not": false, "group": [
+      {"boolean": "or", "not": false, "field": "first_name", "op": "starts_with", "value": "A"}
+    ]}
+  ],
+  "order": [{"field": "created_at", "direction": "desc"}],
+  "limit": 20,
+  "offset": 0,
+  "with_total": true,
+  "include": ["roles"],
+  "counts": ["wallets"],
+  "trashed": null,
+  "distinct": false
+}
+```
+
+Operators: `eq` `ne` `gt` `gte` `lt` `lte` `in` `not_in` `between` `not_between` `null` `not_null`
+`starts_with` `contains` `ends_with`.
+
+Rules the client checks before sending, so you get a named exception instead of a 400:
+
+- `null` / `not_null` carry no value;
+- `in` / `not_in` take a list, capped at 500 per request;
+- `between` / `not_between` take exactly two bounds;
+- `eq` / `ne` are never sent with a null value — that is what `whereNull()` is for;
+- `fields: []` means "the resource's default projection", not "no fields".
+
+Each field publishes the operators *it* allows. `is_active` may allow only `eq`; `created_at` only the range
+operators. `remote:schema users` prints the table.
+
+---
+
+## 7. Reading data
+
+### One record
+
+```php
+User::find(7);              // GET users/7        -> null when absent
+User::findOrFail(7);        // ModelNotFoundException
+User::findMany([1, 2, 3]);  // one query with an "in"
+User::query()->where('email', 'ada@example.com')->first();
+User::query()->where('email', 'ada@example.com')->sole();
+```
+
+`find()` uses the record endpoint only when the builder is otherwise empty. Add a condition and it becomes a
+`query` with `limit 1`, because a `GET {id}` cannot express one.
+
+### Many records — always bounded
+
+```php
+User::query()->where('is_active', true)->limit(20)->get();
 ```
 
 ```php
-// Model
-class User extends \Esanj\RemoteEloquent\Eloquent\RemoteModel {
-    protected $table = 'users';
-    protected $casts = ['id' => 'int', 'created_at' => 'datetime'];
-}
-
-// Read
-User::where('email', $email)->first();
-User::query()->orderByDesc('id')->paginate();
-
-// Write
-User::create(['name' => 'Grace'])->id;   // real id (needs Accounting with last_insert_id)
-User::where('id', 7)->update(['name' => 'Ada']);
-User::where('id', 7)->delete();
-// No DB::transaction() on this connection — it throws (section 7b).
-
-// Raw + token
-\Esanj\RemoteEloquent\Facades\RemoteQuery::select('select * from `users` where id = ?', [7]);
-\Esanj\RemoteEloquent\Facades\RemoteQuery::forgetToken();
+User::all();                           // UnboundedQueryException
+User::query()->where(...)->get();      // UnboundedQueryException
 ```
 
-| I want to… | Do this |
-|---|---|
-| Make a table remote | `class X extends RemoteModel { protected $table = '...'; }` |
-| Fix string/date types | declare `$casts` |
-| Use gRPC | `REMOTE_ELOQUENT_DRIVER=grpc` + install ext-grpc/grpc/protobuf (classes ship with the package) |
-| Get atomicity across statements | You can't from here — put the operation behind one Accounting endpoint (section 7b) |
-| Run a non-atomic `transaction()` block anyway | `REMOTE_ELOQUENT_ALLOW_UNSAFE_TRANSACTIONS=true` |
-| Pin one model to a transport | `protected $transport = 'grpc';` (or `'rest'`) on that model |
-| Survive one transport going down | nothing — it's on by default (`REMOTE_ELOQUENT_FALLBACK=false` to stop it) |
-| Stop one model from falling back | `protected $transportFallback = false;` on that model |
-| Let writes fall back too | `REMOTE_ELOQUENT_FALLBACK_RETRY_WRITES=true` (idempotent writes only) |
-| Run raw SQL | `RemoteQuery::select()` / `::affectingStatement()` |
-| Force re-auth | `RemoteQuery::forgetToken()` |
-| Combine tables | run separate single-table queries, join in PHP |
+There is no "all" over a network. The exception names the limit and the alternatives.
+
+### Filters
+
+```php
+User::query()
+    ->where('is_active', true)
+    ->where('created_at', '>=', now()->subMonth())
+    ->whereIn('id', [1, 2, 3])
+    ->whereNotNull('email_verified_at')
+    ->whereBetween('created_at', [$from, $to])
+    ->where('first_name', 'like', 'Ada%')        // starts_with
+    ->where(fn ($q) => $q->where('gender', 'female')->orWhere('gender', 'other'))
+    ->limit(20)
+    ->get();
+```
+
+`=`, `!=`, `<>`, `>`, `>=`, `<`, `<=` translate directly. `like` translates only in the three published shapes:
+`'x%'`, `'%x%'`, `'%x'`. A wildcard anywhere else — `'a%b'` — has no operator and is refused rather than
+approximated. Nested closures go three levels deep; deeper is `query_too_complex`.
+
+`whereDate()` and `whereYear()` translate with `=`. `whereMonth()`, `whereDay()` and `whereTime()` do not — use
+`whereBetween()` on the timestamp.
+
+A `whereIn()` longer than one request may carry -- `min(in_chunk, 500)` -- is **split into several requests**
+and the results merged; it is never truncated. A `get()` that named no limit of its own splits at
+`max_query_limit` instead, because there the key list is what bounds the request.
+
+Three shapes cannot be split, and are refused by name rather than answered wrongly:
+
+- `whereNotIn()`. The pieces intersect instead of unioning: "not in the first half" and "not in the second
+  half" are both true of very nearly every record, so merging them would answer with very nearly everything.
+- A list with an `orWhere()` beside it. The other branch matches rows the list never named, so each of them
+  would come back once per piece.
+- A negated clause. `NOT (a or b)` is not the question `NOT a or NOT b` asks.
+
+### Projection
+
+```php
+User::query()->select('id', 'first_name')->limit(50)->get();
+User::query()->limit(50)->pluck('first_name', 'id');
+User::query()->where('id', 7)->value('email');
+```
+
+Selecting nothing means the resource's default fields, which is usually a small set — not every column.
+
+### Ordering
+
+```php
+User::query()->orderBy('created_at', 'desc')->limit(20)->get();
+User::query()->latest()->limit(20)->get();
+$builder->reorder()->orderBy('id')->limit(20)->get();
+```
+
+Only fields the schema marks sortable. NULLs sort last in both directions — neither driver's default, and the
+only answer that is stable across both.
+
+### Aggregates
+
+```php
+User::query()->where('is_active', true)->count();
+User::query()->where('is_active', true)->exists();      // one limit-1 query on the key, not a count
+User::query()->doesntExist();
+User::query()->max('created_at');
+Wallet::query()->where('user_id', 7)->sum('balance');
+```
+
+Aggregates follow SQL: `count` over no rows is `0`; `min`/`max`/`sum`/`avg` over no rows is `null` (Laravel's own
+`sum()` turns that into 0). A field must publish the aggregate for it to be allowed.
+
+```php
+User::query()->distinct()->count('gender');             // count(distinct gender), NULL not counted
+```
+
+The one distinct aggregate is a count over one named field the schema marks `distinct`. It leaves NULL out, as SQL
+and Eloquent do locally. `distinct()` before any other aggregate, before a `count()` with no field, or over an
+`in` list long enough to be split is refused — the flag would be lost, or the pieces would count a value once per
+piece, and the answer would be wrong while looking right.
+
+---
+
+## 8. Pagination in one request
+
+```php
+$users = User::query()->active()->orderBy('created_at', 'desc')->paginate(20);
+```
+
+One request. The spec carries `with_total: true` and the response carries both the rows and the count, so this is
+**not** the two queries a local paginator runs.
+
+```php
+$users->total();          // meta.total
+$users->currentPage();
+$users->hasMorePages();   // meta.has_more
+{{ $users->links() }}
+```
+
+`simplePaginate()` skips the total and is one request as well. `cursorPaginate()` is refused: it needs a keyset
+cursor the API does not expose.
+
+Asking for more than `max_query_limit` throws before the call.
+
+---
+
+## 9. Walking a large result set
+
+```php
+User::query()->where('is_active', true)->chunkById(100, function ($users) {
+    foreach ($users as $user) { /* ... */ }
+});
+
+foreach (User::query()->lazyById(100) as $user) { /* ... */ }
+
+User::query()->eachById(function (User $user) { /* ... */ }, 100);
+```
+
+`chunk()`, `lazy()`, `cursor()` and `each()` are refused. They page by **offset**, and against a table that is
+being written to concurrently an offset page skips rows and repeats others. The `ById` forms page by the key,
+which is stable. It is the same reason Laravel recommends them locally, except here the window between pages is a
+network round trip wide.
+
+---
+
+## 10. Relations across the boundary
+
+### Local → remote
+
+The foreign key is a plain column on your table, so this is ordinary Eloquent:
+
+```php
+class Order extends Model            // a LOCAL table
+{
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+
+$order->user;                        // GET users/{id}, memoized by the identity map
+Order::with('user')->get();          // eager load -> one query with an "in"
+```
+
+### Remote → remote
+
+Asking the server to include it, because only the server can join:
+
+```php
+User::query()->with('roles')->limit(20)->get();        // spec "include"
+User::query()->withCount('wallets')->limit(20)->get(); // spec "counts"
+User::query()->has('wallets', '>=', 1)->limit(20)->get();
+User::query()->whereHas('wallets', fn ($q) => $q->where('balance', '>', 0))->limit(20)->get();
+```
+
+Only what the schema publishes under `includes` and `relations` can be asked for.
+
+### Remote → local: refused
+
+```php
+User::whereHas('orders', ...)        // "orders" is a LOCAL table
+```
+
+Two databases cannot be joined by either side. The exception says so, and says what to write:
+
+```php
+$ids = Order::where('total', '>', 100)->distinct()->pluck('user_id');
+$users = User::query()->whereIn('id', $ids)->limit(100)->get();
+```
+
+### Lazy loading is loud
+
+Outside production the provider turns on `Model::preventLazyLoading()`. A lazy load here is a network call per
+row; a `LazyLoadingViolationException` in development is the N+1 you would otherwise meet in production. Opt out
+with `esanj.remote_eloquent.telemetry.prevent_lazy_loading => false` in the published config.
+
+---
+
+## 11. Writes, idempotency and stale records
+
+```php
+$user = User::create([
+    'first_name' => 'Ada',
+    'last_name' => 'Lovelace',
+    'email' => 'ada@example.com',
+]);                                   // POST users        -> 201, the model is refilled from the response
+
+$user->first_name = 'Ada B.';
+$user->save();                        // PATCH users/{id} with ONLY the dirty attributes
+
+$user->delete();                      // DELETE users/{id}
+User::destroy([1, 2]);
+```
+
+Model events (`creating`, `created`, `updating`, `saved`, `deleting`, …) fire exactly as usual.
+
+### Idempotency
+
+Every mutating call carries an `Idempotency-Key`, and the key identifies an **operation**, not a request:
+
+- a retry — internal, a queued job's second attempt, the same code path running again — **reuses** the key, so
+  the server recognises the replay instead of applying the write twice;
+- the key is released once the outcome is known, so the next write is a new operation with a new key.
+
+A write that throws keeps its key. That is deliberate: the retry must be recognised as the same charge.
+
+A queued job retried in a **fresh process** would otherwise mint a different key and apply the write again. Bind
+the scope to something stable and the keys are derived instead of random:
+
+```php
+use Esanj\RemoteEloquent\Idempotency\OperationContext;
+
+app(OperationContext::class)->useScope($this->job->uuid());
+```
+
+Read-only POSTs — `query`, `aggregate`, `validate` — carry no key.
+
+### Stale records
+
+If the model carries a `version` attribute it is sent as `if_match`. When someone else wrote first the server
+answers `409 stale_record`:
+
+```php
+try {
+    $user->save();
+} catch (ConflictException $e) {
+    $user->refresh();          // re-read, re-apply, re-submit
+}
+```
+
+### Mass writes are refused
+
+```php
+User::where('is_active', false)->update(['is_active' => true]);   // UnsupportedQueryException
+User::where('is_active', false)->delete();                        // UnsupportedQueryException
+$user->increment('login_count');                                  // UnsupportedQueryException
+```
+
+There is no endpoint for a write by filter, and doing it row by row is a *different* operation with different
+failure modes. Load a page and write each model, or ask for a domain action that owns the rule — which is what
+`increment` really wants.
+
+---
+
+## 12. Soft deletes
+
+```php
+use Esanj\RemoteEloquent\Concerns\RemoteSoftDeletes;
+
+class User extends ApiUser
+{
+    use RemoteSoftDeletes;
+}
+```
+
+```php
+$user->delete();          // soft
+$user->restore();         // POST users/{id}/restore
+$user->forceDelete();     // DELETE users/{id}?force=1
+$user->trashed();
+
+User::query()->withTrashed()->limit(20)->get();   // trashed: "with"
+User::query()->onlyTrashed()->limit(20)->get();   // trashed: "only"
+```
+
+This trait is **not** Laravel's. There is no global scope and no `deleted_at` filter, because the filtering is the
+server's job: the spec carries a `trashed` mode and Accounting decides what that means for the resource. The
+default mode already excludes trashed rows, so `withoutTrashed()` sends nothing extra.
+
+`restoreOrCreate()` and `createOrRestore()` are refused for the same reason as `firstOrCreate()` — there is no
+atomic endpoint behind them.
+
+---
+
+## 13. Domain actions
+
+Anything with a rule attached to it is an action, not a column:
+
+```php
+$user->remoteAction('suspend');
+$user->remoteAction('unsuspend');
+$user->remoteAction('change-password', ['password' => $new]);
+$user->remoteAction('change-email', ['email' => 'ada@example.com']);
+$user->remoteAction('sync-roles', ['roles' => ['admin', 'support']]);
+$user->remoteAction('notify', ['template' => 'welcome']);
+```
+
+This is where the logic that used to be an `UPDATE` lives now. `is_active` is not writable — suspending an
+account emails the person, writes an audit row and ends their sessions, and none of that happens when a column
+changes. The action is the operation; the column is a consequence.
+
+`php artisan remote:schema users` lists the actions a resource publishes; an unknown one throws
+`UnsupportedResourceException` naming the ones that exist. Actions are mutating, so they carry an idempotency
+key.
+
+---
+
+## 14. Validation
+
+### `exists` and `unique`
+
+```php
+use Illuminate\Validation\Rule;
+
+$request->validate([
+    'user_id' => ['required', Rule::exists(User::class, 'id')],
+    'email'   => ['required', 'email', Rule::unique(User::class, 'email')->ignore($user)],
+]);
+```
+
+Each is **one** request:
+
+- `unique` becomes a single `POST users/aggregate` with `{function: count, ...}`;
+- `exists` over a list becomes a single `POST users/query` with `distinct: true` and `fields: [column]`, because
+  Laravel compares the answer with `count(array_unique($values))` and needs the distinct matches to do it.
+
+It is never one call per value. Lists longer than one page are walked in pages, so the normal case is exactly one
+request.
+
+Use the **class-string** form. `'exists:users,id'` is indistinguishable from a local `users` table, so it goes to
+Laravel's own verifier and silently queries nothing. `remote:doctor` lists every string-form rule it finds.
+
+`where()` closures inside the rule are translated too — `whereIn`, `whereNotIn`, equality, null checks. A closure
+doing something the spec cannot express throws `UnsupportedValidationRuleException` with zero network calls.
+
+### Asking the server to validate
+
+```php
+$user->fill($request->validated());
+$user->validateRemote();                    // POST users/validate, mode=update
+
+User::validateRemoteInto($attributes);      // mode=create, no record in hand
+```
+
+A failure throws `RemoteValidationException`, which **extends** `Illuminate\Validation\ValidationException`. So
+a controller needs no `try`/`catch`: the request bounces back to the form with Accounting's own messages on the
+right fields, in the right language (`Accept-Language` is sent from `app()->getLocale()`).
+
+---
+
+## 15. The auth guard
+
+The signed-in person is a record in Accounting. The guard verifies their token **locally** — no network — and
+then reads `GET users/me` with that token, once per request.
+
+```php
+// config/auth.php
+'defaults' => ['guard' => 'accounting'],
+
+'guards' => [
+    'accounting' => [
+        'driver' => 'accounting',
+        'provider' => 'remote-users',
+        'input' => 'session',            // or 'bearer' for a token API
+        // 'audiences' => ['<client-id>'],   default: esanj.auth_bridge.expected_audiences, else the client id
+        // 'issuer' => 'https://auth.esanj.io',
+        // 'authorized_parties' => [],
+        // 'scopes' => ['users.read'],
+        // 'algorithm' => 'RS256',
+        // 'leeway' => 30,                   clock skew, capped at 300
+        // 'jwks_url' => null, 'jwks_ttl' => 3600,
+        // 'user_ttl' => 0,                  0 = per-request only
+        // 'me' => ['fields' => ['id','first_name'], 'include' => ['roles']],
+    ],
+],
+
+'providers' => [
+    'remote-users' => ['driver' => 'remote', 'model' => App\Models\User::class],
+],
+```
+
+```php
+auth()->user();            // your User model
+auth()->id();              // the token's "sub"
+$this->authorize('update', $user);
+@can('update', $user)
+```
+
+The signing key comes from `esanj/auth-bridge` (`esanj.auth_bridge.public_key` or `public_key_path`). A JWKS URL
+is supported and optional; Passport issues tokens with no `kid`, so the pinned PEM is the normal path. `iss`,
+`azp` and scope checks are opt-in and enforced only when configured.
+
+### Fail loud vs. fail guest
+
+| Situation | Answer |
+| --- | --- |
+| Expired, wrong signature, wrong `aud`/`iss`/`azp`, missing scope, not a JWT, algorithm swap | warning logged, **guest** |
+| No public key and no JWKS, session mode with no auth-bridge, unreachable JWKS, `firebase/php-jwt` missing | `RemoteAuthenticationException` |
+| `users/me` answers 503 / 429 / 403 | the exception propagates |
+| `users/me` answers 404 for the subject | `null` |
+
+Answering "guest" when the question could not be *asked* would log the whole application out and read as a login
+bug, so a configuration fault is loud.
+
+### What it cannot do
+
+```php
+Auth::attempt(['email' => ..., 'password' => ...]);    // throws
+```
+
+The password hash is not a published field and never will be. A login form that says "wrong password" when the
+check could not be performed sends people to reset a password that was correct. Sign-in is the OAuth flow; this
+guard resolves who the resulting token belongs to. `remember me` is disabled for the same kind of reason — there
+is nowhere to store the token, and one that silently never remembers is worse than one never offered.
+
+---
+
+## 16. Acting for a user
+
+A write that originated in a person's request should carry that person's identity, so Accounting can apply their
+permissions on top of the application's. With `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL` set, the signed-in user's
+token is exchanged for a short-lived actor token and sent as `Actor-Authorization` automatically.
+
+In a job or a command, where there is no request, pin the actor:
+
+```php
+User::actingAsRemote($user);
+try {
+    $user->remoteAction('suspend');
+} finally {
+    User::forgetRemoteActor();
+}
+```
+
+Refusals, in order:
+
+- no user → no actor header;
+- no `exchange_url` → no actor header (the documented opt-out); a write the server marks actor-required comes
+  back as `403 actor_denied` rather than being performed anonymously;
+- a user **with** `exchange_url` set and no token available → `RemoteAuthenticationException`, so a write that
+  speaks for a person is never quietly sent as the application;
+- the subject token's `sub` not matching the actor → refused. That claim is only ever used to refuse, never to
+  grant.
+
+---
+
+## 17. Permissions and quota
+
+```php
+use Esanj\RemoteEloquent\Facades\RemoteAccess;
+
+RemoteAccess::can('users.update');
+RemoteAccess::allows('users', 'delete');
+RemoteAccess::permissions();
+RemoteAccess::quota();            // the last RateLimit-* headers seen; sends nothing
+RemoteAccess::refresh();          // force a re-read
+```
+
+```blade
+@if (RemoteAccess::allows('users', 'update'))
+    <a href="{{ route('users.edit', $user) }}">Edit</a>
+@endif
+```
+
+`GET access` is read once per process and kept until some other response reports a new `X-Permissions-Version`,
+so a menu asking twelve questions costs nothing.
+
+**It is advisory.** An unreadable access endpoint answers `true`. This is for hiding a button, never for the
+check itself — Accounting authorizes every call whether or not this ran, and a client-side "no" caused by a cold
+cache would be a worse bug than a button that turns out to 403. In a test, `RemoteAccess::fake([...])` makes it
+strict.
+
+---
+
+## 18. Error handling
+
+Every failure is a typed exception. With `errors.render` on, each one answers the browser itself.
+
+| Server says | You get | Rendered |
+| --- | --- | --- |
+| `400 invalid_query` / `unknown_field` / `operator_not_allowed` / `field_not_writable` / `query_too_complex`, `413 payload_too_large` | `InvalidQueryException` | 500 |
+| refused before sending | `UnsupportedQueryException`, `UnboundedQueryException`, `UnsupportedValidationRuleException` | 500 |
+| `404 unknown_resource` | `UnsupportedResourceException` | 500 |
+| `401` (after one automatic refresh) | `RemoteAuthenticationException` | 500 |
+| `403 permission_denied` / `privileged_account` / `actor_denied` | `AccessDeniedException` — `requiredPermission()` | 403 |
+| `404 not_found` | `ModelNotFoundException`, or `null` from `find()` | 404 |
+| `404 user_merged` | followed **once** automatically with a warning, then `UserMergedException` — `mergedInto()` | 409 |
+| `409 stale_record` / `idempotency_mismatch` / `idempotency_in_progress` | `ConflictException` | 409 |
+| `422 validation_failed` / `field_locked` | `RemoteValidationException` | 422 / back to the form |
+| `429 rate_limited` | `RateLimitedException` — `retryAfter()`, `bucket()` | 429 + `Retry-After` |
+| `503`/`504 query_timeout` | `RemoteTimeoutException` | 503 |
+| `503 unavailable`, connect or TLS failure | `TransportException` | 503 |
+
+Why a 400 renders 500: a malformed query is a bug in **your** code, not in the visitor's request. Showing them a
+400 would blame the wrong party and hide the bug from your error tracker.
+
+Every exception carries `errorCode()`, `status()`, `requestId()` and `context()`. The request id is the one in
+Accounting's logs — quote it in a ticket.
+
+```php
+try {
+    $user->remoteAction('suspend');
+} catch (AccessDeniedException $e) {
+    report($e);
+    return back()->withErrors(__('You need :permission.', ['permission' => $e->requiredPermission()]));
+} catch (RateLimitedException $e) {
+    return back()->withErrors(__('Try again in :n seconds.', ['n' => $e->retryAfter()]));
+}
+```
+
+With `REMOTE_ELOQUENT_RENDER_ERRORS=false`, every `render()` returns null and your own handler takes over.
+
+**A 429 is never retried, never replayed on another transport and never silently re-sent.** That was version 1's
+headline bug: a rate-limited write that had already been accepted got sent again.
+
+---
+
+## 19. Rate limits in queued jobs
+
+```php
+use Esanj\RemoteEloquent\Queue\RemoteRateLimited;
+
+class SyncAccount implements ShouldQueue
+{
+    public function middleware(): array
+    {
+        return [new RemoteRateLimited()];        // fallback 60s, clamped at 3600
+    }
+}
+```
+
+It catches **only** `RateLimitedException` and releases the job for exactly `Retry-After` seconds. A timeout or an
+outage is a different decision and is left to the job's own `$tries` / `retryUntil()`. There is no jitter and no
+backoff of its own.
+
+---
+
+## 20. Testing
+
+No HTTP, no fixtures, no mock expectations. The fake **executes** the QuerySpec against rows you hand it, so a
+green test proves the query says what you meant — not merely that some method was called.
+
+```php
+use Esanj\RemoteEloquent\Testing\FakeResourceTransport;
+
+protected function tearDown(): void
+{
+    FakeResourceTransport::reset();
+    parent::tearDown();
+}
+
+public function test_it_lists_active_users(): void
+{
+    User::fake([
+        ['id' => 1, 'first_name' => 'Ada',   'is_active' => true],
+        ['id' => 2, 'first_name' => 'Grace', 'is_active' => false],
+    ]);
+
+    $users = User::query()->active()->limit(10)->get();
+
+    $this->assertCount(1, $users);
+    FakeResourceTransport::assertQueried('users', fn (array $spec) => $spec['limit'] === 10);
+    FakeResourceTransport::assertRequestCount(1);
+}
+```
+
+Arranging it:
+
+```php
+FakeResourceTransport::seed('wallets', [...]);
+FakeResourceTransport::identifyBy('invoices', 'uuid');     // a resource whose key is not "id"
+FakeResourceTransport::schemaFor('users', [...]);          // else one is inferred from the rows
+FakeResourceTransport::failWith('users', 429, retryAfter: 30);
+FakeResourceTransport::failValidation('users', ['email' => ['Taken.']]);
+FakeResourceTransport::handleAction('users', 'suspend', fn (array $payload, array $row) => true);
+FakeResourceTransport::actingAs(['id' => 1]);              // what users/me answers
+FakeResourceTransport::grant(['users.read', 'users.update']);
+```
+
+Asserting:
+
+```php
+FakeResourceTransport::assertCreated('users', fn (array $attributes) => $attributes['email'] === 'ada@example.com');
+FakeResourceTransport::assertUpdated('users');
+FakeResourceTransport::assertDeleted('users');
+FakeResourceTransport::assertNothingDeleted();
+FakeResourceTransport::assertActioned('users', 'suspend');
+FakeResourceTransport::assertRequestCount(1);              // the N+1 guard
+```
+
+Or fluently, through the facade:
+
+```php
+RemoteResource::fake()
+    ->seed('users', [['id' => 1, 'first_name' => 'Ada']])
+    ->grant(['users.read'])
+    ->assertRequestCount(0);
+```
+
+### Semantics the fake pins
+
+They are stricter than either driver's defaults on purpose — a test that is green here is green on MySQL **and**
+PostgreSQL:
+
+- `between` / `not_between` are **half-open**: lower inclusive, upper exclusive;
+- `in []` matches nothing; `not_in []` matches everything, including null rows;
+- three-valued logic: a comparison with null is unknown, and `NOT unknown` is unknown — so neither
+  `where('x', 1)` nor `whereNot('x', 1)` returns a null row. Only `null` / `not_null` are definite;
+- LIKE wildcards inside a value are literal;
+- text matching is **case sensitive**;
+- NULLs order last in both directions;
+- pipeline order: trashed → where → distinct → order → total → offset/limit → projection, counts, includes.
+
+A repeated idempotency key replays the stored response instead of writing twice, so retries are testable.
+`delete()` soft-deletes when the row has a `deleted_at` or the schema says so, otherwise it removes the row.
+
+The fake does **not** enforce the schema on writes — use `failWith()` / `failValidation()` to drive those paths.
+Enforcing it would make the fake a second implementation of the server's rules, and the two would drift.
+
+---
+
+## 21. Artisan commands
+
+```bash
+php artisan remote:schema users                 # the published contract
+php artisan remote:schema users --diff          # ...against your model; non-zero on drift
+php artisan remote:schema users --diff --model="App\Models\Account"
+
+php artisan remote:access                       # permissions + quota
+php artisan remote:access --json
+
+php artisan remote:model users --auth           # generate a model from the schema
+php artisan remote:model wallets --namespace="App\Models\Accounting"
+
+php artisan remote:doctor                       # everything at once
+php artisan remote:doctor --offline             # config only, no network
+```
+
+`remote:doctor` checks the configuration, the base URL's scheme, reachability, the token, the permissions
+granted, your models against the published schemas, and scans `app/` for `exists:` / `unique:` rules in string
+form. It exits non-zero on a problem; warnings do not fail CI.
+
+`remote:model` has no `--force`. It will not overwrite a file you have edited.
+
+---
+
+## 22. Performance
+
+### The identity map
+
+Resolving the same record twice in one request is one call, not two. The key includes the application, the
+actor, the resource, the id, the projection, the includes, the trashed mode, and both version headers — because
+every one of those changes what the server would return. A record fetched with five fields is never served to a
+caller that asked for all of them.
+
+It dies with the request. `cache.find_ttl` is 0: records are **not** cached across requests, because Accounting
+is the system of record for balances and permissions and serving a stale one by default would be a correctness
+bug wearing a speedup's clothes.
+
+### The N+1 warning
+
+Code that used to be a join now reads exactly the same and costs one round trip per row. Past
+`telemetry.call_warning_threshold` calls in a single request, a warning names the resource and operation that
+repeated most:
+
+```
+Remote Eloquent made 43 calls to the account service in one request (threshold 20).
+hotspots: {"users.find": 41}
+```
+
+That line is usually the whole diagnosis. The fix is nearly always the same shape:
+
+```php
+// 41 calls
+foreach ($orders as $order) { $names[] = $order->user->first_name; }
+
+// 1 call
+$users = User::query()->whereIn('id', $orders->pluck('user_id')->unique())->limit(100)->get()->keyBy('id');
+```
+
+### Schema and access caching
+
+Both are cached and both carry a version header. A response reporting a version other than the cached one
+discards the entry immediately — invalidation with no invalidation step. A schema that cannot be fetched is not an
+error: the client-side check is skipped and the request goes out exactly as it would have, because Accounting
+validates it anyway.
+
+---
+
+## 23. Everything it refuses
+
+Each throws before any network call, naming the alternative.
+
+| Refused | Instead |
+| --- | --- |
+| `all()`, unbounded `get()` | `->limit(n)->get()`, `chunkById()` |
+| unbounded `pluck()` | `->limit(n)->pluck(...)` |
+| `cursorPaginate()` | `paginate()`, `simplePaginate()` |
+| `chunk()`, `lazy()`, `cursor()`, `each()` | `chunkById()`, `lazyById()`, `eachById()` |
+| `firstOrCreate()`, `createOrFirst()`, `updateOrCreate()`, `incrementOrCreate()`, `upsert()` | `first()` then `create()`, or a domain action |
+| `restoreOrCreate()`, `createOrRestore()` | the same |
+| builder `update()` / `delete()` / `forceDelete()` / `touch()` | load the page, write each model |
+| `increment()`, `decrement()`, `incrementEach()`, `decrementEach()` | a domain action |
+| `whereColumn()` | compare in PHP, or ask for a computed field |
+| `whereRaw`, `selectRaw`, `orderByRaw`, `havingRaw`, `DB::raw`, `toSql()` | a published field |
+| `whereExists()`, subqueries | `pluck()` the ids, then `whereIn()` |
+| `whereJson*`, `whereFullText` | ask for the field to be published |
+| `whereMonth`, `whereDay`, `whereTime` | `whereBetween()` on the timestamp |
+| `inRandomOrder()`, `groupBy()`, `having()`, `join()` | an aggregate, or an endpoint |
+| `withAggregate()`, `hasMorph()` | `withCount()`, or a domain query |
+| `whereHas` / `has` / `withCount` against a **local** relation | `pluck()` the ids, then `whereIn()` |
+| `DB::transaction()` on this connection | one idempotent call, or a domain action |
+| `insert()`, `insertGetId()`, `insertUsing()`, `truncate()` | `create()` per record |
+| `Auth::attempt()` | the OAuth flow |
+
+---
+
+## 24. Troubleshooting
+
+**`UnsupportedResourceException: ... has no transport`** — the provider is not registered, or the transport could
+not be built. Run `php artisan remote:doctor`. In a test, call `Model::fake()` first.
+
+**`Database connection [remote-eloquent] not configured`** — something asked for a real connection. The provider
+registers it; if you cleared the config cache in a half-deployed state, run `php artisan config:clear`.
+
+**`400 unknown_field`** — your model names something the contract does not publish. `remote:schema {resource} --diff`.
+
+**`400 operator_not_allowed`** — the field exists but not with that operator. The schema table prints which ones
+it takes; `is_active` commonly allows only `eq`.
+
+**`403 permission_denied`** — `remote:access` shows what this application holds. `requiredPermission()` on the
+exception names what was missing.
+
+**`403 actor_denied`** — the write needs the end user's identity. Set `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL`, or
+pin the actor with `actingAsRemote()`.
+
+**`409 idempotency_in_progress`** — the same operation is still running. Retry later with the same key; do not
+mint a new one.
+
+**A page got slow** — look for the N+1 warning in the log, then `FakeResourceTransport::assertRequestCount()` in
+a test to hold the line.
+
+**`Rule::exists()` seems to hit the local database** — you used the string form, or the model has no
+`$connection = 'remote-eloquent'`. `remote:doctor` lists the string-form rules it finds.
+
+**`LazyLoadingViolationException` in development** — that is the point. Eager load it, or `pluck()`/`whereIn()`.
+
+---
+
+## 25. Cheat sheet
+
+```php
+// read
+User::find(7);
+User::query()->where('email', $email)->first();
+User::query()->active()->orderBy('created_at', 'desc')->limit(20)->get();
+User::query()->active()->paginate(20);                    // rows + total, ONE request
+User::query()->where('is_active', true)->count();
+User::query()->whereIn('id', $ids)->limit(100)->pluck('first_name', 'id');
+User::query()->chunkById(100, fn ($users) => ...);
+
+// remote relations
+User::query()->with('roles')->withCount('wallets')->limit(20)->get();
+User::query()->has('wallets')->limit(20)->get();
+
+// write
+$user = User::create([...]);
+$user->update(['first_name' => 'Ada']);
+$user->delete(); $user->restore(); $user->forceDelete();
+$user->remoteAction('suspend');
+
+// validate
+Rule::exists(User::class, 'id');
+Rule::unique(User::class, 'email')->ignore($user);
+$user->validateRemote();
+
+// auth
+auth()->user();  User::actingAsRemote($user);  User::forgetRemoteActor();
+
+// access
+RemoteAccess::allows('users', 'update');  RemoteAccess::quota();
+
+// test
+User::fake([...]);  FakeResourceTransport::assertRequestCount(1);  FakeResourceTransport::reset();
+
+// diagnose
+php artisan remote:doctor
+php artisan remote:schema users --diff
+php artisan remote:access
+```
