@@ -4,186 +4,210 @@ declare(strict_types=1);
 
 namespace Esanj\RemoteEloquent\Auth;
 
-use Esanj\RemoteEloquent\Contracts\AccessTokenProviderInterface;
-use Esanj\RemoteEloquent\DTOs\TokenData;
-use Esanj\RemoteEloquent\Exceptions\TokenRequestException;
+use Esanj\RemoteEloquent\Contracts\AccessTokenProvider;
+use Esanj\RemoteEloquent\Exceptions\RemoteAuthenticationException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Throwable;
 
-/**
- * Issues and caches the OAuth 2.0 access token used for every remote query.
- *
- * The token is cached (keyed by client id + scope) until shortly before it
- * expires, so a token endpoint round-trip does not happen on every query. When
- * the cached token is expiring it is refreshed automatically — through the
- * refresh_token grant if the server issued a refresh token, otherwise by
- * requesting a fresh client_credentials token.
- */
-final class AccessTokenManager implements AccessTokenProviderInterface
+final class AccessTokenManager implements AccessTokenProvider
 {
+    private ?string $token = null;
+
+    private int $tokenExpiresAt = 0;
+
     /**
-     * @param  array<string, mixed>  $config  The config('esanj.remote_eloquent.auth') array.
+     * @param array<string, string> $headers extra headers for the token call
      */
     public function __construct(
-        private readonly array $config,
-    ) {}
-
-    public function getAccessToken(bool $forceFresh = false): string
+        private readonly HttpFactory     $http,
+        private readonly CacheRepository $cache,
+        private readonly ?string         $tokenUrl,
+        private readonly ?string         $clientId,
+        private readonly ?string         $clientSecret,
+        private readonly string          $scope = '',
+        private readonly string          $cacheKey = 'esanj:remote_eloquent:token',
+        private readonly int             $refreshBufferSeconds = 60,
+        private readonly float           $timeout = 5.0,
+        private readonly float           $connectTimeout = 2.0,
+        private readonly array           $headers = [],
+    )
     {
-        return $this->getToken($forceFresh)->accessToken;
     }
 
-    public function getAuthorizationHeader(bool $forceFresh = false): string
+    /**
+     * @throws RemoteAuthenticationException
+     */
+    public function getAccessToken(bool $forceFresh = false): string
     {
-        return $this->getToken($forceFresh)->getAuthorizationHeader();
+        if (!$forceFresh) {
+            $cached = $this->cachedToken();
+
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
+
+        return $this->issueToken();
     }
 
     public function forget(): void
     {
-        $this->cache()->forget($this->cacheKey());
+        $this->token = null;
+        $this->tokenExpiresAt = 0;
+
+        $this->cache->forget($this->cacheKey);
     }
 
-    /**
-     * @throws TokenRequestException
-     */
-    private function getToken(bool $forceFresh): TokenData
+    public function expiresAt(): int
     {
-        if (! $forceFresh) {
-            $cached = $this->cache()->get($this->cacheKey());
+        return $this->tokenExpiresAt;
+    }
 
-            if ($cached instanceof TokenData && ! $cached->isExpiring($this->buffer())) {
-                return $cached;
-            }
+    private function cachedToken(): ?string
+    {
+        $now = time();
 
-            if ($cached instanceof TokenData && $cached->hasRefreshToken()) {
-                try {
-                    return $this->store($this->requestRefresh((string) $cached->refreshToken));
-                } catch (TokenRequestException) {
-                    // Refresh token no longer valid — fall through to a fresh grant.
-                }
-            }
+        if ($this->token !== null && $this->tokenExpiresAt > $now) {
+            return $this->token;
         }
 
-        return $this->store($this->requestClientCredentials());
+        $entry = $this->cache->get($this->cacheKey);
+
+        if (!is_array($entry)) {
+            return null;
+        }
+
+        $token = $entry['token'] ?? null;
+        $expiresAt = (int)($entry['expires_at'] ?? 0);
+
+        if (!is_string($token) || $token === '' || $expiresAt <= $now) {
+            return null;
+        }
+
+        $this->token = $token;
+        $this->tokenExpiresAt = $expiresAt;
+
+        return $token;
     }
 
     /**
-     * @throws TokenRequestException
+     * @throws RemoteAuthenticationException
      */
-    private function requestClientCredentials(): TokenData
+    private function issueToken(): string
     {
-        return $this->requestToken([
+        $url = $this->requireSetting($this->tokenUrl, 'auth.token_url');
+        $clientId = $this->requireSetting($this->clientId, 'auth.client_id');
+        $clientSecret = $this->requireSetting($this->clientSecret, 'auth.client_secret');
+
+        $form = [
             'grant_type' => 'client_credentials',
-            'client_id' => $this->clientId(),
-            'client_secret' => $this->clientSecret(),
-            'scope' => (string) ($this->config['scope'] ?? '*'),
-        ]);
-    }
+            'client_id' => $clientId,
+            'client_secret' => $clientSecret,
+        ];
 
-    /**
-     * @throws TokenRequestException
-     */
-    private function requestRefresh(string $refreshToken): TokenData
-    {
-        return $this->requestToken([
-            'grant_type' => 'refresh_token',
-            'refresh_token' => $refreshToken,
-            'client_id' => $this->clientId(),
-            'client_secret' => $this->clientSecret(),
-            'scope' => (string) ($this->config['scope'] ?? '*'),
-        ]);
-    }
-
-    /**
-     * @param  array<string, string>  $payload
-     *
-     * @throws TokenRequestException
-     */
-    private function requestToken(array $payload): TokenData
-    {
-        $url = (string) ($this->config['token_url'] ?? '');
-
-        if (filter_var($url, FILTER_VALIDATE_URL) === false) {
-            throw TokenRequestException::invalidTokenUrl($url);
+        if ($this->scope !== '') {
+            $form['scope'] = $this->scope;
         }
 
         try {
-            $response = Http::asForm()->acceptJson()->post($url, $payload);
+            $response = $this->http
+                ->asForm()
+                ->acceptJson()
+                ->withHeaders($this->headers)
+                ->timeout($this->timeout)
+                ->connectTimeout($this->connectTimeout)
+                ->post($url, $form);
         } catch (ConnectionException $e) {
-            throw TokenRequestException::connectionFailed($e->getMessage(), $e);
+            throw RemoteAuthenticationException::tokenRequestFailed(
+                'the authorization server could not be reached',
+                ['token_url' => $url],
+                $e
+            );
+        } catch (Throwable $e) {
+            throw RemoteAuthenticationException::tokenRequestFailed(
+                'the token request failed before it could be read',
+                ['token_url' => $url],
+                $e
+            );
         }
 
-        if ($response->failed()) {
-            $error = $response->json('error_description', $response->json('error', 'Unknown error'));
-
-            throw TokenRequestException::failed((string) $error, $response->status());
+        if (!$response->successful()) {
+            throw RemoteAuthenticationException::tokenRequestFailed(
+                sprintf('the authorization server answered %d', $response->status()),
+                [
+                    'token_url' => $url,
+                    'status' => $response->status(),
+                    'oauth_error' => $this->oauthError($response->json()),
+                ]
+            );
         }
 
-        $token = TokenData::fromArray((array) $response->json());
+        $payload = $response->json();
 
-        if ($token->accessToken === '') {
-            throw TokenRequestException::malformedResponse();
+        if (!is_array($payload)) {
+            throw RemoteAuthenticationException::tokenRequestFailed(
+                'the authorization server did not answer with JSON',
+                ['token_url' => $url, 'status' => $response->status()]
+            );
         }
+
+        $token = $payload['access_token'] ?? null;
+
+        if (!is_string($token) || $token === '') {
+            throw RemoteAuthenticationException::tokenRequestFailed(
+                'the authorization server returned no access_token',
+                ['token_url' => $url, 'status' => $response->status()]
+            );
+        }
+
+        $this->remember($token, (int)($payload['expires_in'] ?? 0));
 
         return $token;
     }
 
-    private function store(TokenData $token): TokenData
+    private function remember(string $token, int $expiresIn): void
     {
-        $ttl = max($token->secondsUntilExpiry() - $this->buffer(), 1);
+        $lifetime = $expiresIn > 0 ? $expiresIn : 60;
+        $usable = $lifetime - max(0, $this->refreshBufferSeconds);
 
-        $this->cache()->put($this->cacheKey(), $token, $ttl);
+        $this->token = $token;
+        $this->tokenExpiresAt = time() + max(1, $usable);
 
-        return $token;
-    }
+        if ($usable > 0) {
+            $this->cache->put(
+                $this->cacheKey,
+                ['token' => $token, 'expires_at' => $this->tokenExpiresAt],
+                $usable
+            );
 
-    private function cache(): CacheRepository
-    {
-        $store = $this->config['cache_store'] ?? null;
+            return;
+        }
 
-        return $store !== null ? Cache::store($store) : Cache::store();
-    }
-
-    private function cacheKey(): string
-    {
-        $prefix = (string) ($this->config['cache_prefix'] ?? 'remote_eloquent_token_');
-        $identifier = $this->clientId().'|'.(string) ($this->config['scope'] ?? '*');
-
-        return $prefix.hash('sha256', $identifier);
-    }
-
-    private function buffer(): int
-    {
-        return (int) ($this->config['cache_buffer_seconds'] ?? 60);
+        $this->cache->forget($this->cacheKey);
     }
 
     /**
-     * @throws TokenRequestException
+     * @throws RemoteAuthenticationException
      */
-    private function clientId(): string
+    private function requireSetting(?string $value, string $setting): string
     {
-        $id = (string) ($this->config['client_id'] ?? '');
+        $value = $value !== null ? trim($value) : '';
 
-        if ($id === '') {
-            throw TokenRequestException::missingCredentials();
+        if ($value === '') {
+            throw RemoteAuthenticationException::missingCredentials($setting);
         }
 
-        return $id;
+        return $value;
     }
 
-    /**
-     * @throws TokenRequestException
-     */
-    private function clientSecret(): string
+    private function oauthError(mixed $body): ?string
     {
-        $secret = (string) ($this->config['client_secret'] ?? '');
-
-        if ($secret === '') {
-            throw TokenRequestException::missingCredentials();
+        if (is_array($body) && isset($body['error']) && is_string($body['error'])) {
+            return $body['error'];
         }
 
-        return $secret;
+        return null;
     }
 }

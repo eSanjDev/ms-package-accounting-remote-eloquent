@@ -4,124 +4,581 @@ declare(strict_types=1);
 
 namespace Esanj\RemoteEloquent;
 
+use Esanj\AuthBridge\Contracts\AuthBridgeServiceInterface;
 use Esanj\RemoteEloquent\Auth\AccessTokenManager;
-use Esanj\RemoteEloquent\Contracts\AccessTokenProviderInterface;
-use Esanj\RemoteEloquent\Contracts\TransportInterface;
-use Esanj\RemoteEloquent\Database\RemoteConnection;
-use Esanj\RemoteEloquent\Grpc\GrpcClientFactory;
-use Esanj\RemoteEloquent\Support\RemoteQueryManager;
-use Esanj\RemoteEloquent\Transport\TransportManager;
-use Illuminate\Contracts\Foundation\Application;
+use Esanj\RemoteEloquent\Auth\AccountingGuard;
+use Esanj\RemoteEloquent\Auth\ActorTokenManager;
+use Esanj\RemoteEloquent\Auth\RemoteUserProvider;
+use Esanj\RemoteEloquent\Cache\IdentityMap;
+use Esanj\RemoteEloquent\Console\RemoteAccessCommand;
+use Esanj\RemoteEloquent\Console\RemoteDoctorCommand;
+use Esanj\RemoteEloquent\Console\RemoteModelCommand;
+use Esanj\RemoteEloquent\Console\RemoteSchemaCommand;
+use Esanj\RemoteEloquent\Contracts\AccessTokenProvider;
+use Esanj\RemoteEloquent\Contracts\ActorTokenProvider;
+use Esanj\RemoteEloquent\Contracts\ResourceTransport;
+use Esanj\RemoteEloquent\Database\ApiConnection;
+use Esanj\RemoteEloquent\Exceptions\UnsupportedQueryException;
+use Esanj\RemoteEloquent\Idempotency\OperationContext;
+use Esanj\RemoteEloquent\Models\ApiModel;
+use Esanj\RemoteEloquent\Models\ApiUser;
+use Esanj\RemoteEloquent\Observability\RemoteCallCollector;
+use Esanj\RemoteEloquent\Schema\SchemaRepository;
+use Esanj\RemoteEloquent\Schema\SchemaValidator;
+use Esanj\RemoteEloquent\Testing\FakeResourceTransport;
+use Esanj\RemoteEloquent\Validation\RemotePresenceVerifier;
+use Illuminate\Auth\AuthManager;
+use Illuminate\Container\Container;
+use Illuminate\Contracts\Cache\Factory as CacheFactory;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Queue\Job as QueuedJob;
 use Illuminate\Database\Connection;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\LazyLoadingViolationException;
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Request;
+use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Validation\PresenceVerifierInterface;
+use InvalidArgumentException;
+use Psr\Log\LoggerInterface;
+use Throwable;
 
-class RemoteEloquentServiceProvider extends ServiceProvider
+final class RemoteEloquentServiceProvider extends ServiceProvider
 {
-    /**
-     * The connection driver name this package registers.
-     */
-    private const DRIVER = 'remote';
+    public const CONFIG_KEY = 'esanj.remote_eloquent';
+
+    public const CONNECTION = 'remote-eloquent';
+
+    private const TRANSPORTS = [
+        'rest' => 'Esanj\\RemoteEloquent\\Transport\\RestResourceTransport',
+        'fake' => FakeResourceTransport::class,
+        'array' => FakeResourceTransport::class,
+    ];
+
+    private const REST_CLIENT = 'Esanj\\RemoteEloquent\\Client\\ResourceClient';
+
+    private const REST_CLIENT_ALIASES = [
+        'Esanj\\RemoteEloquent\\Client\\ResourceClient',
+        'Esanj\\RemoteEloquent\\Transport\\ResourceClient',
+    ];
+
+    private const DEFAULT_ALGORITHM = 'RS256';
 
     public function register(): void
     {
-        $this->mergeConfigFrom(__DIR__.'/config/remote_eloquent.php', 'esanj.remote_eloquent');
+        $this->mergeConfigFrom(__DIR__ . '/config/remote_eloquent.php', self::CONFIG_KEY);
 
-        $this->registerRemoteConnection();
-        $this->registerAccessToken();
+        $this->registerConnection();
+        $this->registerRequestState();
+        $this->registerTokenProviders();
         $this->registerTransport();
-        $this->registerManager();
+        $this->registerSchema();
     }
 
     public function boot(): void
     {
         $this->publishes([
-            __DIR__.'/config/remote_eloquent.php' => config_path('esanj/remote_eloquent.php'),
+            __DIR__ . '/config/remote_eloquent.php' => config_path('esanj/remote_eloquent.php'),
         ], 'esanj-remote-eloquent-config');
+
+        $this->registerAuthDrivers();
+        $this->registerPresenceVerifier();
+        $this->registerCommands();
+        $this->bindIdempotencyScopeToJobs();
+        $this->preventLazyLoadingOutsideProduction();
     }
 
-    /**
-     * Teach Laravel's database layer how to build the "remote" connection, and
-     * register the connections themselves so RemoteModels resolve without the
-     * user editing config/database.php.
-     *
-     * Besides the default connection (which uses the configured default
-     * transport), one connection is registered per shipped transport — e.g.
-     * "remote_rest" and "remote_grpc" — so a model can pin itself to a specific
-     * transport with `protected $transport = 'grpc'` (see RemoteModel).
-     *
-     * Each of those also gets a "_fallback" and a "_nofallback" variant, so
-     * `protected $transportFallback = false` can keep one model on its own
-     * transport while the rest of the service still fails over.
-     */
-    private function registerRemoteConnection(): void
+    private function registerConnection(): void
     {
-        Connection::resolverFor(self::DRIVER, function ($connection, $database, $prefix, $config) {
-            return new RemoteConnection($connection, $database, $prefix, $config);
-        });
+        Connection::resolverFor(
+            self::CONNECTION,
+            static function ($connection, $database, $prefix, $config): ApiConnection {
+                return new ApiConnection((string)($config['name'] ?? self::CONNECTION));
+            }
+        );
 
-        $base = (string) config('esanj.remote_eloquent.connection', self::DRIVER);
+        $config = $this->app->make(ConfigRepository::class);
+        $key = 'database.connections.' . self::CONNECTION;
 
-        // A null transport (or fallback) leaves that decision to the package
-        // default, resolved at query time.
-        foreach ([null, ...TransportManager::DRIVERS] as $transport) {
-            $name = $transport === null ? $base : $base.'_'.$transport;
-
-            $this->registerConnection($name, $transport, null);
-            $this->registerConnection($name.'_fallback', $transport, true);
-            $this->registerConnection($name.'_nofallback', $transport, false);
+        if ($config->get($key) === null) {
+            $config->set($key, [
+                'driver' => self::CONNECTION,
+                'database' => null,
+                'prefix' => '',
+            ]);
         }
     }
 
-    /**
-     * Register a single "remote" database connection, optionally pinned to a
-     * transport ("rest"/"grpc") and to a fallback decision.
-     */
-    private function registerConnection(string $name, ?string $transport, ?bool $fallback): void
+    private function registerRequestState(): void
     {
-        config([
-            "database.connections.{$name}" => [
-                'driver' => self::DRIVER,
-                'database' => $name,
-                'prefix' => (string) config('esanj.remote_eloquent.database.prefix', ''),
-                'server_version' => (string) config('esanj.remote_eloquent.database.server_version', '8.0.0'),
-                'transport' => $transport,
-                'transport_fallback' => $fallback,
-            ],
-        ]);
+        $this->app->scoped(IdentityMap::class, function (Container $app): IdentityMap {
+            return new IdentityMap((bool)$this->setting($app, 'cache.identity_map', true));
+        });
+
+        $this->app->scoped(OperationContext::class, static function (): OperationContext {
+            return new OperationContext();
+        });
+
+        $this->app->scoped(RemoteCallCollector::class, function (Container $app): RemoteCallCollector {
+            return new RemoteCallCollector(
+                $this->logger($app),
+                (int)$this->setting($app, 'telemetry.call_warning_threshold', 20),
+            );
+        });
     }
 
-    private function registerAccessToken(): void
+    private function registerTokenProviders(): void
     {
-        $this->app->singleton(AccessTokenProviderInterface::class, static function (Application $app): AccessTokenProviderInterface {
-            return new AccessTokenManager((array) config('esanj.remote_eloquent.auth', []));
+        $this->app->singleton(AccessTokenProvider::class, function (Container $app): AccessTokenProvider {
+            return new AccessTokenManager(
+                $app->make(HttpFactory::class),
+                $this->cache($app),
+                $this->text($this->setting($app, 'auth.token_url')),
+                $this->text($this->setting($app, 'auth.client_id')),
+                $this->text($this->setting($app, 'auth.client_secret')),
+                (string)($this->setting($app, 'auth.scope') ?? ''),
+                (string)($this->setting($app, 'auth.cache_key') ?? 'esanj:remote_eloquent:token'),
+                (int)$this->setting($app, 'auth.refresh_buffer_seconds', 60),
+                (float)$this->setting($app, 'rest.timeout', 5.0),
+                (float)$this->setting($app, 'rest.connect_timeout', 2.0),
+            );
         });
+
+        $this->app->alias(AccessTokenProvider::class, AccessTokenManager::class);
+
+        $this->app->singleton(ActorTokenProvider::class, function (Container $app): ActorTokenProvider {
+            return new ActorTokenManager(
+                $app->make(HttpFactory::class),
+                $this->cache($app),
+                $this->bridge($app),
+                $this->text($this->setting($app, 'actor.exchange_url')),
+                $this->text($this->setting($app, 'auth.client_id')),
+                $this->text($this->setting($app, 'auth.client_secret')),
+                (string)($this->setting($app, 'actor.token_type') ?? 'Bearer'),
+                (int)$this->setting($app, 'actor.ttl', 60),
+                (string)($this->setting($app, 'actor.scope') ?? ''),
+                (string)($this->setting($app, 'actor.audience') ?? ''),
+                $this->cachePrefix($app),
+                (float)$this->setting($app, 'rest.timeout', 5.0),
+                (float)$this->setting($app, 'rest.connect_timeout', 2.0),
+            );
+        });
+
+        $this->app->alias(ActorTokenProvider::class, ActorTokenManager::class);
     }
 
     private function registerTransport(): void
     {
-        $this->app->singleton(GrpcClientFactory::class, static function (Application $app): GrpcClientFactory {
-            return new GrpcClientFactory((array) config('esanj.remote_eloquent.grpc', []));
+        $this->app->singleton(self::REST_CLIENT, function (Container $app): object {
+            return $this->makeRestClient($app);
         });
 
-        $this->app->singleton(TransportManager::class, static function (Application $app): TransportManager {
-            return new TransportManager($app);
-        });
-
-        $this->app->singleton(TransportInterface::class, static function (Application $app): TransportInterface {
-            return $app->make(TransportManager::class)->resolve();
+        $this->app->scoped(ResourceTransport::class, function (Container $app): ResourceTransport {
+            return $this->makeTransport($app);
         });
     }
 
-    private function registerManager(): void
+    private function registerSchema(): void
     {
-        $this->app->singleton('esanj.remote_eloquent', static function (Application $app): RemoteQueryManager {
-            return new RemoteQueryManager(
-                $app->make(TransportInterface::class),
-                $app->make(AccessTokenProviderInterface::class),
-                (string) config('esanj.remote_eloquent.connection', self::DRIVER),
+        $this->app->scoped(SchemaRepository::class, function (Container $app): SchemaRepository {
+            return new SchemaRepository(
+                $app->make(ResourceTransport::class),
+                $this->cache($app),
+                (int)$this->setting($app, 'cache.schema_ttl', 3600),
+                $this->cachePrefix($app),
+                $this->logger($app),
             );
         });
 
-        $this->app->alias('esanj.remote_eloquent', RemoteQueryManager::class);
+        $this->app->scoped(SchemaValidator::class, static function (Container $app): SchemaValidator {
+            return new SchemaValidator($app->make(SchemaRepository::class));
+        });
+    }
+
+    private function makeTransport(Container $app): ResourceTransport
+    {
+        $driver = (string)($this->setting($app, 'driver', 'rest') ?? 'rest');
+        $class = self::TRANSPORTS[$driver] ?? null;
+
+        if ($class === null) {
+            throw UnsupportedQueryException::method(
+                sprintf('the "%s" remote-eloquent transport', $driver),
+                sprintf(
+                    'Set REMOTE_ELOQUENT_DRIVER to one of: %s. Version 1\'s "grpc" driver shipped SQL over the wire and no longer exists.',
+                    implode(', ', array_keys(self::TRANSPORTS))
+                ),
+                ['driver' => $driver],
+            );
+        }
+
+        if ($class === FakeResourceTransport::class) {
+            return new FakeResourceTransport();
+        }
+
+        if (!class_exists($class)) {
+            throw UnsupportedQueryException::method(
+                sprintf('the "%s" remote-eloquent transport', $driver),
+                sprintf(
+                    '%s is not installed. Bind %s yourself, or use the "fake" driver.',
+                    $class,
+                    ResourceTransport::class
+                ),
+                ['driver' => $driver, 'class' => $class],
+            );
+        }
+
+        /** @var ResourceTransport $transport */
+        $transport = $app->make($class, [
+            'client' => $app->make(self::REST_CLIENT),
+            'calls' => $app->make(RemoteCallCollector::class),
+            'collector' => $app->make(RemoteCallCollector::class),
+            'logger' => $this->logger($app),
+        ]);
+
+        return $transport;
+    }
+
+    private function makeRestClient(Container $app): object
+    {
+        $class = null;
+
+        foreach (self::REST_CLIENT_ALIASES as $candidate) {
+            if (class_exists($candidate)) {
+                $class = $candidate;
+
+                break;
+            }
+        }
+
+        if ($class === null) {
+            throw UnsupportedQueryException::method(
+                'the REST resource client',
+                sprintf(
+                    '%s is not installed. Bind %s yourself, or use the "fake" driver.',
+                    self::REST_CLIENT,
+                    ResourceTransport::class
+                ),
+                ['class' => self::REST_CLIENT],
+            );
+        }
+
+        $base = $this->text($this->setting($app, 'rest.base_url'));
+
+        if ($base === null) {
+            throw UnsupportedQueryException::method(
+                'the REST resource client',
+                'Set REMOTE_ELOQUENT_BASE_URL (or ACCOUNTING_BRIDGE_BASE_URL) to the account service, e.g. https://auth.esanj.io.',
+                ['setting' => self::CONFIG_KEY . '.rest.base_url'],
+            );
+        }
+
+        $headers = $this->setting($app, 'rest.headers', []);
+
+        $parameters = [
+            'http' => $app->make(HttpFactory::class),
+            'accessTokens' => $app->make(AccessTokenProvider::class),
+            'actorTokens' => $app->make(ActorTokenProvider::class),
+            'baseUrl' => $base,
+            'prefix' => (string)($this->setting($app, 'rest.prefix') ?? '/api/remote/v1'),
+            'timeout' => (float)$this->setting($app, 'rest.timeout', 5.0),
+            'connectTimeout' => (float)$this->setting($app, 'rest.connect_timeout', 2.0),
+            'clientVersion' => (string)($this->setting($app, 'rest.client_version') ?? '2.0'),
+            'headers' => is_array($headers) ? $headers : [],
+            'calls' => $app->make(RemoteCallCollector::class),
+            'logger' => $this->logger($app),
+        ];
+
+        return $class === self::REST_CLIENT
+            ? new $class(...$parameters)
+            : $app->make($class, $parameters);
+    }
+
+    private function registerAuthDrivers(): void
+    {
+        if (!$this->app->bound('auth')) {
+            return;
+        }
+
+        /** @var AuthManager $auth */
+        $auth = $this->app->make('auth');
+
+        $auth->provider('remote', static function ($app, array $config): RemoteUserProvider {
+            return new RemoteUserProvider((string)($config['model'] ?? ApiUser::class));
+        });
+
+        $auth->extend('accounting', function (Container $app, string $name, array $config) use ($auth): AccountingGuard {
+            $provider = $auth->createUserProvider($config['provider'] ?? null);
+
+            if (!$provider instanceof RemoteUserProvider) {
+                throw new InvalidArgumentException(sprintf(
+                    'The "%s" guard needs a "remote" user provider, got %s. Set auth.guards.%s.provider to a provider with "driver" => "remote".',
+                    $name,
+                    $provider === null ? 'none' : $provider::class,
+                    $name,
+                ));
+            }
+
+            $guard = new AccountingGuard(
+                $name,
+                $provider,
+                $app->make(HttpFactory::class),
+                null,
+                $this->bridge($app),
+                $this->cache($app),
+                $this->logger($app),
+                (string)($config['input'] ?? 'session'),
+                (string)($config['algorithm'] ?? self::DEFAULT_ALGORITHM),
+                $this->text($this->bridgeSetting($app, 'public_key')),
+                $this->text($this->bridgeSetting($app, 'public_key_path')),
+                $this->text($config['jwks_url'] ?? null),
+                (int)($config['jwks_ttl'] ?? 3600),
+                $this->audiences($app, $config),
+                $this->text($config['issuer'] ?? $this->bridgeSetting($app, 'expected_issuer')),
+                $this->list($config['authorized_parties'] ?? []),
+                $this->list($config['scopes'] ?? []),
+                (int)($config['leeway'] ?? 30),
+                (int)($config['user_ttl'] ?? 0),
+                is_array($config['me'] ?? null) ? $config['me'] : [],
+                $this->cachePrefix($app),
+            );
+
+            $request = $app->refresh('request', $guard, 'setRequest');
+
+            if ($request instanceof Request) {
+                $guard->setRequest($request);
+            }
+
+            return $guard;
+        });
+    }
+
+    private function registerPresenceVerifier(): void
+    {
+        if (!$this->app->bound('validation.presence')) {
+            return;
+        }
+
+        $this->app->extend(
+            'validation.presence',
+            function (PresenceVerifierInterface $local, Container $app): PresenceVerifierInterface {
+                if ($local instanceof RemotePresenceVerifier) {
+                    return $local;
+                }
+
+                try {
+                    $transport = $app->make(ResourceTransport::class);
+                } catch (Throwable $exception) {
+                    $this->logger($app)?->warning(
+                        'Remote Eloquent could not install its presence verifier; Rule::exists() and Rule::unique() on a remote model will fail.',
+                        ['exception' => $exception->getMessage()],
+                    );
+
+                    return $local;
+                }
+
+                return new RemotePresenceVerifier(
+                    $transport,
+                    $local,
+                    [self::CONNECTION],
+                    (int)$this->setting($app, 'limits.max_query_limit', 100),
+                    (int)$this->setting($app, 'limits.in_chunk', 500),
+                );
+            }
+        );
+
+        if ($this->app->resolved('validator')) {
+            $this->app->make('validator')->setPresenceVerifier($this->app->make('validation.presence'));
+        }
+    }
+
+    private function registerCommands(): void
+    {
+        if (!$this->app->runningInConsole()) {
+            return;
+        }
+
+        $this->commands([
+            RemoteSchemaCommand::class,
+            RemoteAccessCommand::class,
+            RemoteModelCommand::class,
+            RemoteDoctorCommand::class,
+        ]);
+    }
+
+    private function bindIdempotencyScopeToJobs(): void
+    {
+        if (!$this->app->bound('events')) {
+            return;
+        }
+
+        $this->app->make('events')->listen(
+            JobProcessing::class,
+            function (JobProcessing $event): void {
+                $job = $event->job;
+
+                if (!$job instanceof QueuedJob) {
+                    return;
+                }
+
+                $uuid = $job->uuid();
+
+                if (!is_string($uuid) || $uuid === '') {
+                    return;
+                }
+
+                try {
+                    $operations = $this->container()->make(OperationContext::class);
+                } catch (Throwable) {
+                    return;
+                }
+
+                if ($operations instanceof OperationContext) {
+                    $operations->useScope($uuid);
+                }
+            }
+        );
+    }
+
+    private function preventLazyLoadingOutsideProduction(): void
+    {
+        if ($this->app->environment('production')) {
+            return;
+        }
+
+        if (!(bool)$this->setting($this->container(), 'telemetry.prevent_lazy_loading', true)) {
+            return;
+        }
+
+        $this->app->booted(static function (): void {
+            if (Model::preventsLazyLoading()) {
+                return;
+            }
+
+            Model::preventLazyLoading();
+
+            Model::handleLazyLoadingViolationUsing(static function (Model $model, string $relation): void {
+                if (!$model instanceof ApiModel) {
+                    return;
+                }
+
+                if (!$model->exists || $model->wasRecentlyCreated) {
+                    return;
+                }
+
+                throw new LazyLoadingViolationException($model, $relation);
+            });
+        });
+    }
+
+    private function container(): Container
+    {
+        /** @var Container $app */
+        $app = $this->app;
+
+        return $app;
+    }
+
+    private function setting(Container $app, string $key, mixed $default = null): mixed
+    {
+        return $app->make(ConfigRepository::class)->get(self::CONFIG_KEY . '.' . $key, $default);
+    }
+
+    private function bridgeSetting(Container $app, string $key): mixed
+    {
+        return $app->make(ConfigRepository::class)->get('esanj.auth_bridge.' . $key);
+    }
+
+    private function cache(Container $app): CacheRepository
+    {
+        $store = $this->text($this->setting($app, 'cache.store'));
+
+        return $app->make(CacheFactory::class)->store($store);
+    }
+
+    private function cachePrefix(Container $app): string
+    {
+        return (string)($this->setting($app, 'cache.prefix') ?? 'esanj:remote_eloquent:');
+    }
+
+    private function logger(Container $app): ?LoggerInterface
+    {
+        if (!$app->bound('log')) {
+            return null;
+        }
+
+        $logs = $app->make('log');
+        $channel = $this->text($this->setting($app, 'telemetry.log_channel'));
+
+        if ($channel !== null && method_exists($logs, 'channel')) {
+            $logger = $logs->channel($channel);
+
+            return $logger instanceof LoggerInterface ? $logger : null;
+        }
+
+        return $logs instanceof LoggerInterface ? $logs : null;
+    }
+
+    private function bridge(Container $app): ?AuthBridgeServiceInterface
+    {
+        if (!interface_exists(AuthBridgeServiceInterface::class) || !$app->bound(AuthBridgeServiceInterface::class)) {
+            return null;
+        }
+
+        $bridge = $app->make(AuthBridgeServiceInterface::class);
+
+        return $bridge instanceof AuthBridgeServiceInterface ? $bridge : null;
+    }
+
+    private function audiences(Container $app, array $config): array
+    {
+        $audiences = $this->list($config['audiences'] ?? $this->bridgeSetting($app, 'expected_audiences') ?? []);
+
+        if ($audiences !== []) {
+            return $audiences;
+        }
+
+        $clientId = $this->text($this->setting($app, 'auth.client_id'));
+
+        return $clientId === null ? [] : [$clientId];
+    }
+
+    private function list(mixed $value): array
+    {
+        if (is_string($value)) {
+            $value = explode(',', $value);
+        }
+
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+
+        foreach ($value as $item) {
+            if (!is_scalar($item)) {
+                continue;
+            }
+
+            $item = trim((string)$item);
+
+            if ($item !== '') {
+                $items[] = $item;
+            }
+        }
+
+        return array_values(array_unique($items));
+    }
+
+    private function text(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
     }
 }

@@ -1,8 +1,15 @@
 {
     "name": "esanj/remote-eloquent",
-    "description": "Remote Eloquent models for Laravel — run native Eloquent queries against the Esanj Accounting service over gRPC or REST.",
+    "description": "Eloquent models backed by the Esanj Accounting resource API — version 2 sends a structured QuerySpec the server validates, never SQL.",
     "type": "library",
     "license": "MIT",
+    "keywords": [
+        "laravel",
+        "eloquent",
+        "microservice",
+        "api-client",
+        "esanj"
+    ],
     "authors": [
         {
             "name": "Esanj Tech Team",
@@ -11,15 +18,17 @@
     ],
     "require": {
         "php": "^8.2|^8.3|^8.4",
+        "illuminate/auth": "^11.0|^12.0|^13.0",
+        "illuminate/console": "^11.0|^12.0|^13.0",
         "illuminate/database": "^11.0|^12.0|^13.0",
         "illuminate/http": "^11.0|^12.0|^13.0",
-        "illuminate/support": "^11.0|^12.0|^13.0"
+        "illuminate/support": "^11.0|^12.0|^13.0",
+        "illuminate/validation": "^11.0|^12.0|^13.0"
     },
     "suggest": {
-        "ext-grpc": "Required for the gRPC transport (REMOTE_ELOQUENT_DRIVER=grpc).",
-        "grpc/grpc": "Provides the \\Grpc\\BaseStub client used by the gRPC transport.",
-        "google/protobuf": "Required to (de)serialize the gRPC QueryRequest/QueryResponse messages.",
-        "esanj/auth-bridge": "Reuse an existing client-credentials token issuer instead of the built-in AccessTokenManager."
+        "firebase/php-jwt": "Required by the \"accounting\" auth guard to verify the end user's token locally (^6.0).",
+        "esanj/auth-bridge": "Supplies the OAuth flow, the session token and the signing key the guard and the actor-token exchange reuse.",
+        "phpunit/phpunit": "Required by Esanj\\RemoteEloquent\\Testing\\FakeResourceTransport's assertions (^10.0|^11.0|^12.0)."
     },
     "autoload": {
         "psr-4": {
@@ -32,7 +41,8 @@
                 "Esanj\\RemoteEloquent\\RemoteEloquentServiceProvider"
             ],
             "aliases": {
-                "RemoteQuery": "Esanj\\RemoteEloquent\\Facades\\RemoteQuery"
+                "RemoteResource": "Esanj\\RemoteEloquent\\Facades\\RemoteResource",
+                "RemoteAccess": "Esanj\\RemoteEloquent\\Facades\\RemoteAccess"
             }
         }
     },

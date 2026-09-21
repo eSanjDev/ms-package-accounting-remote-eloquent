@@ -4,108 +4,109 @@ declare(strict_types=1);
 
 namespace Esanj\RemoteEloquent\Exceptions;
 
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Throwable;
 
-/**
- * A transport-level failure: could not reach the server, an unexpected status,
- * a malformed response, or a misconfigured gRPC stack.
- */
-final class TransportException extends RemoteEloquentException
+final class TransportException extends RemoteEloquentException implements HttpExceptionInterface
 {
-    /**
-     * Whether the statement may already have reached the server.
-     *
-     * False only when the failure provably happened before anything was sent —
-     * the one case where replaying a write on another transport cannot apply it
-     * twice. See {@see \Esanj\RemoteEloquent\Transport\FallbackPolicy}.
-     */
-    private bool $dispatched = true;
+    private const USER_MESSAGE = 'The account service is briefly unavailable. Please try again in a moment.';
 
-    public static function connectionFailed(string $transport, string $reason, ?Throwable $previous = null): self
+    public static function connectionFailed(
+        string     $reason,
+        array      $context = [],
+        ?Throwable $previous = null,
+    ): self
     {
         return new self(
-            "Could not reach the Accounting service over {$transport}: {$reason}",
-            previous: $previous,
-            context: ['transport' => $transport, 'reason' => $reason],
+            sprintf('Could not reach the account service: %s', $reason),
+            'transport_unreachable',
+            0,
+            null,
+            $context,
+            $previous,
         );
     }
 
-    public static function unexpectedStatus(string $transport, int $status, string $body): self
+    public static function tlsFailure(
+        string     $reason,
+        array      $context = [],
+        ?Throwable $previous = null,
+    ): self
     {
         return new self(
-            "The Accounting service returned an unexpected {$transport} status [{$status}].",
-            code: $status,
-            context: ['transport' => $transport, 'status' => $status, 'body' => $body],
+            sprintf('The TLS handshake with the account service failed: %s. The request was not sent in the clear.', $reason),
+            'transport_tls_failure',
+            0,
+            null,
+            $context,
+            $previous,
         );
     }
 
-    public static function unauthenticated(string $transport): self
+    public static function unavailable(
+        ?string $requestId = null,
+        array   $context = [],
+        string  $message = '',
+    ): self
     {
         return new self(
-            "Authentication with the Accounting service failed over {$transport}.",
-            code: 401,
-            context: ['transport' => $transport],
+            $message !== '' ? $message : 'The account service reported itself unavailable (503).',
+            'unavailable',
+            503,
+            $requestId,
+            $context,
         );
     }
 
-    public static function requestFailed(string $transport, Throwable $previous): self
+    public static function malformedResponse(
+        string     $reason,
+        ?string    $requestId = null,
+        array      $context = [],
+        ?Throwable $previous = null,
+    ): self
     {
         return new self(
-            "The {$transport} request to the Accounting service failed: {$previous->getMessage()}",
-            previous: $previous,
-            context: ['transport' => $transport, 'reason' => $previous->getMessage()],
+            sprintf('The account service answered with something this client cannot read: %s', $reason),
+            'malformed_response',
+            0,
+            $requestId,
+            $context,
+            $previous,
         );
     }
 
-    public static function misconfigured(string $transport, string $reason): self
+    public static function unexpectedStatus(
+        int     $status,
+        ?string $requestId = null,
+        array   $context = [],
+    ): self
     {
-        $exception = new self(
-            "The {$transport} transport is misconfigured: {$reason}",
-            context: ['transport' => $transport, 'reason' => $reason],
-        );
-
-        $exception->dispatched = false;
-
-        return $exception;
-    }
-
-    public static function grpcUnavailable(string $reason): self
-    {
-        $exception = new self(
-            "The gRPC transport is unavailable: {$reason}",
-            context: ['reason' => $reason],
-        );
-
-        // Thrown while building the client — the statement never left the process.
-        $exception->dispatched = false;
-
-        return $exception;
-    }
-
-    /**
-     * Every transport in the fallback chain failed. The primary failure is kept
-     * as the previous exception; the message names what each attempt hit.
-     *
-     * @param  array<string, string>  $attempts  driver name => failure message, in the order tried.
-     */
-    public static function allTransportsFailed(string $primary, array $attempts, ?Throwable $previous = null): self
-    {
-        $summary = implode('; ', array_map(
-            static fn (string $driver, string $reason): string => "{$driver}: {$reason}",
-            array_keys($attempts),
-            array_values($attempts),
-        ));
-
         return new self(
-            "Every transport failed for this statement — {$summary}",
-            code: (int) ($previous?->getCode() ?? 0),
-            previous: $previous,
-            context: ['transport' => $primary, 'attempts' => $attempts],
+            sprintf('The account service answered %d, which this client has no mapping for.', $status),
+            'unexpected_status',
+            $status,
+            $requestId,
+            $context,
         );
     }
 
-    public function wasDispatched(): bool
+    public function getStatusCode(): int
     {
-        return $this->dispatched;
+        return 503;
+    }
+
+    public function getHeaders(): array
+    {
+        return [];
+    }
+
+    protected function responseStatus(): int
+    {
+        return 503;
+    }
+
+    protected function userMessage(): string
+    {
+        return self::USER_MESSAGE;
     }
 }
