@@ -71,6 +71,14 @@ final class FakeResourceTransport implements ResourceTransport
     /** @var array<string, mixed>|null */
     private static ?array $me = null;
 
+    /** @var list<string>|null */
+    private static ?array $whereFields = null;
+
+    private static string $whereResource = '';
+
+    /** @var list<string> */
+    private static array $caseInsensitive = [];
+
     /** @var array<string, array{fingerprint: string, response: RemoteResponse}> */
     private static array $replays = [];
 
@@ -419,6 +427,7 @@ final class FakeResourceTransport implements ResourceTransport
     {
         $this->record('query', $resource, ['spec' => $spec]);
         $this->guard($resource, self::BUCKET_READ);
+        self::useWhereSchema($resource);
 
         $matched = self::applyWheres(
             self::visibleRows($resource, is_string($spec['trashed'] ?? null) ? $spec['trashed'] : null),
@@ -478,6 +487,7 @@ final class FakeResourceTransport implements ResourceTransport
     public function aggregate(string $resource, array $spec): RemoteResponse
     {
         $this->record('aggregate', $resource, ['spec' => $spec]);
+        self::useWhereSchema($resource);
         $this->guard($resource, self::BUCKET_READ);
 
         $rows = self::applyWheres(
@@ -1078,12 +1088,42 @@ final class FakeResourceTransport implements ResourceTransport
                 continue;
             }
 
+            $field = (string) ($where['field'] ?? '');
+
+            if (self::$whereFields !== null && $field !== '' && ! in_array($field, self::$whereFields, true)) {
+                throw InvalidQueryException::unknownField(self::$whereResource, $field, null, ['transport' => 'fake']);
+            }
+
             self::assertValue(
-                (string) ($where['field'] ?? ''),
+                $field,
                 strtolower((string) ($where['op'] ?? '')),
                 $where['value'] ?? null,
             );
         }
+    }
+
+    /**
+     * Only a schema set with schemaFor() is authoritative: one inferred from seeded rows knows only the keys it saw.
+     */
+    private static function useWhereSchema(string $resource): void
+    {
+        $schema = self::$schemas[$resource] ?? null;
+        $fields = is_array($schema) && is_array($schema['fields'] ?? null) ? $schema['fields'] : null;
+
+        self::$whereResource = $resource;
+        self::$whereFields = $fields === null ? null : array_map(strval(...), array_keys($fields));
+        self::$caseInsensitive = [];
+
+        foreach ($fields ?? [] as $name => $definition) {
+            if (is_array($definition) && ($definition['collation'] ?? null) === 'unicode_ci') {
+                self::$caseInsensitive[] = (string) $name;
+            }
+        }
+    }
+
+    private static function fold(mixed $value): mixed
+    {
+        return is_string($value) ? mb_strtolower($value) : $value;
     }
 
     /**
@@ -1128,7 +1168,9 @@ final class FakeResourceTransport implements ResourceTransport
      */
     private static function evaluateAll(array $wheres, array $row): ?bool
     {
-        $result = true;
+        // AND binds tighter than OR, as it does in the SQL the server runs: a OR b AND c is a OR (b AND c).
+        $terms = [];
+        $current = null;
         $first = true;
 
         foreach ($wheres as $where) {
@@ -1143,15 +1185,24 @@ final class FakeResourceTransport implements ResourceTransport
             }
 
             if ($first) {
-                $result = $value;
+                $current = $value;
                 $first = false;
-
-                continue;
+            } elseif (strtolower((string) ($where['boolean'] ?? 'and')) === 'or') {
+                $terms[] = $current;
+                $current = $value;
+            } else {
+                $current = self::both($current, $value);
             }
+        }
 
-            $result = strtolower((string) ($where['boolean'] ?? 'and')) === 'or'
-                ? self::either($result, $value)
-                : self::both($result, $value);
+        if ($first) {
+            return true;
+        }
+
+        $result = $current;
+
+        foreach ($terms as $term) {
+            $result = self::either($term, $result);
         }
 
         return $result;
@@ -1173,12 +1224,15 @@ final class FakeResourceTransport implements ResourceTransport
 
         $field = (string) ($where['field'] ?? '');
         $operator = strtolower((string) ($where['op'] ?? ''));
+        $left = $field === '' ? null : Arr::get($row, $field);
+        $right = $where['value'] ?? null;
 
-        return self::compareOperator(
-            $operator,
-            $field === '' ? null : Arr::get($row, $field),
-            $where['value'] ?? null,
-        );
+        if (in_array($field, self::$caseInsensitive, true)) {
+            $left = self::fold($left);
+            $right = is_array($right) ? array_map(self::fold(...), $right) : self::fold($right);
+        }
+
+        return self::compareOperator($operator, $left, $right);
     }
 
     /**
