@@ -134,10 +134,22 @@ REMOTE_ELOQUENT_RENDER_ERRORS=true
 # REMOTE_ELOQUENT_BASE_URL=https://auth.esanj.io        # else ACCOUNTING_BRIDGE_BASE_URL
 # REMOTE_ELOQUENT_CLIENT_ID=                            # else ACCOUNTING_BRIDGE_CLIENT_ID
 # REMOTE_ELOQUENT_CLIENT_SECRET=                        # else ACCOUNTING_BRIDGE_CLIENT_SECRET
+# REMOTE_ELOQUENT_TOKEN_URL=                             # else {base_url}/oauth/token
+# REMOTE_ELOQUENT_SCOPE=
+# REMOTE_ELOQUENT_TOKEN_CACHE_KEY=esanj:remote_eloquent:token
+# REMOTE_ELOQUENT_REFRESH_BUFFER=60
 # REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL=
+# REMOTE_ELOQUENT_ACTOR_TOKEN_TYPE=Bearer
+# REMOTE_ELOQUENT_ACTOR_TTL=60
 # REMOTE_ELOQUENT_CACHE_STORE=
+# REMOTE_ELOQUENT_CACHE_PREFIX=esanj:remote_eloquent:
+# REMOTE_ELOQUENT_FIND_TTL=0
 # REMOTE_ELOQUENT_LOG_CHANNEL=
 ```
+
+Base and token URLs must be `https` outside the `local` and `testing` environments; the provider refuses to build
+the client otherwise. Cached tokens, schemas and access snapshots are keyed by client id and base URL, so two
+services sharing a cache store never read each other's.
 
 | Key | Default | What it is |
 | --- | --- | --- |
@@ -542,18 +554,24 @@ class User extends ApiUser
 ```
 
 ```php
-$user->delete();          // soft
-$user->restore();         // POST users/{id}/restore
-$user->forceDelete();     // DELETE users/{id}?force=1
-$user->trashed();
+$user->delete();          // closes THIS application's membership; the account lives on
+$user->restore();         // POST users/{id}/restore — reopens the membership
+$user->forceDelete();     // DELETE users/{id}?force=1 — removes the account itself
+$user->trashed();         // reads the deleted_at the server published
 
-User::query()->withTrashed()->limit(20)->get();   // trashed: "with"
-User::query()->onlyTrashed()->limit(20)->get();   // trashed: "only"
+User::query()->withTrashed()->limit(20)->get();   // trashed: "with" — members and closed memberships
+User::query()->onlyTrashed()->limit(20)->get();   // trashed: "only" — closed memberships only
 ```
+
+For `users`, "deleted" means **deleted for this application**: the account is shared by every application that
+hosts it, so `delete()` closes the calling application's membership and `deleted_at` is when that happened.
+`forceDelete()` removes the account for everyone and needs `users.force_delete`; the server refuses it with
+`409` while another application still hosts the user.
 
 This trait is **not** Laravel's. There is no global scope and no `deleted_at` filter, because the filtering is the
 server's job: the spec carries a `trashed` mode and Accounting decides what that means for the resource. The
-default mode already excludes trashed rows, so `withoutTrashed()` sends nothing extra.
+default mode already excludes trashed rows, so `withoutTrashed()` sends nothing extra. `fresh()` and `refresh()`
+on a model you just deleted ask with `trashed: "with"`, so they still find it.
 
 `restoreOrCreate()` and `createOrRestore()` are refused for the same reason as `firstOrCreate()` — there is no
 atomic endpoint behind them.
@@ -569,9 +587,16 @@ $user->remoteAction('suspend');
 $user->remoteAction('unsuspend');
 $user->remoteAction('change-password', ['password' => $new]);
 $user->remoteAction('change-email', ['email' => 'ada@example.com']);
-$user->remoteAction('sync-roles', ['roles' => ['admin', 'support']]);
-$user->remoteAction('notify', ['template' => 'welcome']);
+$user->remoteAction('sync-roles', ['roles' => ['editor', 'support']]);
+$user->remoteAction('notify', ['title' => 'Welcome', 'message' => 'Your account is ready.', 'channels' => ['database']]);
 ```
+
+The payload travels as `{"payload": {...}}`; that wrapping is the transport's job, pass the bare array.
+`email` and `phone_number` are writable on create only: change an existing address with `change-email`, which
+needs its own permission and signs the user out everywhere. `sync-roles` never grants the protected roles
+(`admin`, `application_admin`, `user`) however they are spelled, and leaves a protected role the membership
+already holds in place. `users.update.all` lets `save()` reach users outside this application's members; without
+it only members can be edited.
 
 This is where the logic that used to be an `UPDATE` lives now. `is_active` is not writable — suspending an
 account emails the person, writes an audit row and ends their sessions, and none of that happens when a column
@@ -696,8 +721,13 @@ is nowhere to store the token, and one that silently never remembers is worse th
 ## 16. Acting for a user
 
 A write that originated in a person's request should carry that person's identity, so Accounting can apply their
-permissions on top of the application's. With `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL` set, the signed-in user's
-token is exchanged for a short-lived actor token and sent as `Actor-Authorization` automatically.
+permissions on top of the application's. With `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL` set, the user signed in on the
+default guard is picked up on every write (and on `validateRemote()`, which presents the actor without spending
+it), their token is exchanged for a short-lived actor token, and it is sent as `Actor-Authorization`
+automatically. An actor token is good for exactly one write, so it is exchanged again for the next one.
+
+`GET users/me` (`ApiUser::me()` and the `accounting` guard) is different: it is answered with the user's **own**
+access token in `Authorization`, not with an actor token.
 
 In a job or a command, where there is no request, pin the actor:
 
@@ -762,12 +792,13 @@ Every failure is a typed exception. With `errors.render` on, each one answers th
 | `401` (after one automatic refresh) | `RemoteAuthenticationException` | 500 |
 | `403 permission_denied` / `privileged_account` / `actor_denied` | `AccessDeniedException` — `requiredPermission()` | 403 |
 | `404 not_found` | `ModelNotFoundException`, or `null` from `find()` | 404 |
-| `404 user_merged` | followed **once** automatically with a warning, then `UserMergedException` — `mergedInto()` | 409 |
+| `404 user_merged` | reads follow it **once** with a warning, then `UserMergedException` — `mergedInto()`; writes never follow it | 409 |
 | `409 stale_record` / `idempotency_mismatch` / `idempotency_in_progress` | `ConflictException` | 409 |
 | `422 validation_failed` / `field_locked` | `RemoteValidationException` | 422 / back to the form |
 | `429 rate_limited` | `RateLimitedException` — `retryAfter()`, `bucket()` | 429 + `Retry-After` |
 | `503`/`504 query_timeout` | `RemoteTimeoutException` | 503 |
-| `503 unavailable`, connect or TLS failure | `TransportException` | 503 |
+| `503 unavailable`, `500 internal_error`, any other 5xx, a 3xx redirect, connect or TLS failure | `TransportException` | 503 |
+| `405 method_not_allowed` / `415 unsupported_media_type` | `InvalidQueryException` | 500 |
 
 Why a 400 renders 500: a malformed query is a bug in **your** code, not in the visitor's request. Showing them a
 400 would blame the wrong party and hide the bug from your error tracker.

@@ -244,10 +244,13 @@ $user = User::create(['first_name' => 'Ada', 'last_name' => 'Lovelace', 'email' 
 
 $user->first_name = 'Ada B.';
 $user->save();          // PATCH with ONLY the dirty attributes
-$user->delete();        // soft delete, when the resource has them
-$user->forceDelete();   // DELETE ?force=1
-$user->restore();
+$user->delete();        // users: closes this application's membership
+$user->forceDelete();   // DELETE ?force=1 — the account itself; 409 while another application hosts it
+$user->restore();       // reopens the membership
 ```
+
+`email` and `phone_number` are sent on create only; an existing address changes through the `change-email`
+action. Editing users who are not this application's members needs `users.update.all`.
 
 Every mutating call carries an **Idempotency-Key**. The key identifies an *operation*, not a request: a retry —
 an internal one, a queued job's second attempt, the same code path running again — reuses it, so the server
@@ -276,7 +279,7 @@ syncing roles — Accounting owns what each one means:
 ```php
 $user->remoteAction('suspend');
 $user->remoteAction('change-email', ['email' => 'ada@example.com']);
-$user->remoteAction('sync-roles', ['roles' => ['admin']]);
+$user->remoteAction('sync-roles', ['roles' => ['editor']]);   // protected roles are always refused
 ```
 
 `php artisan remote:schema users` lists the actions a resource publishes. An unknown one throws
@@ -356,8 +359,9 @@ token belongs to.
 ### Acting for a user
 
 A write that originated in a person's request should travel with that person's identity, so Accounting can apply
-their permissions on top of the application's. Set `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL` and it happens by itself.
-In a job that has no request, pin the actor:
+their permissions on top of the application's. Set `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL` and it happens by itself:
+the user signed in on the default guard is exchanged for a one-write actor token on every write and on
+`validateRemote()`. In a job that has no request, pin the actor:
 
 ```php
 User::actingAsRemote($user);
