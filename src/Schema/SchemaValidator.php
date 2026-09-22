@@ -31,8 +31,21 @@ final class SchemaValidator
 
     private const NULL_OPERATORS = ['null', 'not_null'];
 
+    /** @var array<string, true> */
+    private array $refreshed = [];
+
     public function __construct(private readonly SchemaRepository $schemas)
     {
+    }
+
+    /**
+     * Every field the schema publishes to this application, which is exactly what it may read.
+     *
+     * @return list<string>
+     */
+    public function readableFields(string $resource): array
+    {
+        return $this->schemas->for($resource)?->fieldNames() ?? [];
     }
 
     /**
@@ -434,6 +447,18 @@ final class SchemaValidator
 
         if ($field !== null) {
             return $field;
+        }
+
+        // The schema is per caller: a permission granted since it was cached publishes the field now.
+        if ($schema->name() !== '' && ! isset($this->refreshed[$schema->name()])) {
+            $this->refreshed[$schema->name()] = true;
+            $this->schemas->forget($schema->name());
+
+            $field = $this->schemas->for($schema->name())?->field($name);
+
+            if ($field !== null) {
+                return $field;
+            }
         }
 
         $suggestion = $this->suggest($name, $schema->fieldNames());

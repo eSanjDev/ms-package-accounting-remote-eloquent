@@ -8,6 +8,7 @@ use Esanj\RemoteEloquent\Exceptions\UnsupportedQueryException;
 use Esanj\RemoteEloquent\Query\ApiEloquentBuilder;
 use Esanj\RemoteEloquent\Query\ApiQueryBuilder;
 use Esanj\RemoteEloquent\Query\QuerySpec;
+use Esanj\RemoteEloquent\Transport\RemoteResponse;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection as BaseCollection;
@@ -66,6 +67,23 @@ trait RemoteSoftDeletes
     public function scopeWithoutTrashed(EloquentBuilder $query): void
     {
         $this->remoteQueryOf($query, 'withoutTrashed')->trashed(null);
+    }
+
+    /**
+     * fresh(), refresh() and queued-model restoration of a deleted record have to ask for it with trashed.
+     *
+     * @param  EloquentBuilder<static>  $query
+     * @return EloquentBuilder<static>
+     */
+    protected function setKeysForSelectQuery($query)
+    {
+        $query = parent::setKeysForSelectQuery($query);
+
+        if ($this->trashed()) {
+            $this->remoteQueryOf($query, 'fresh')->trashed(QuerySpec::TRASHED_WITH);
+        }
+
+        return $query;
     }
 
     /**
@@ -143,8 +161,6 @@ trait RemoteSoftDeletes
 
         $resource = $this->resource();
         $id = $this->remoteKey();
-        $operations = static::remoteOperations();
-        $key = $operations->keyFor('restore', $resource, $id);
 
         $payload = [];
 
@@ -152,11 +168,9 @@ trait RemoteSoftDeletes
             $payload['fields'] = $fields;
         }
 
-        $response = static::remoteTransport()
+        $response = $this->remoteWrite('restore', $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
             ->withActor($this->remoteActor())
-            ->restore($resource, $id, $payload, $key);
-
-        $operations->forget('restore', $resource, $id);
+            ->restore($resource, $id, $payload, $key));
 
         $this->exists = true;
 

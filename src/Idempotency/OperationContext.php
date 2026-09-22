@@ -79,8 +79,8 @@ final class OperationContext
      */
     public function flush(): void
     {
+        // The sequence stays, so the next operation derives a new key instead of replaying a spent one.
         $this->keys = [];
-        $this->sequence = [];
     }
 
     private function signature(string $operation, string $resource, string|int|null $id): string

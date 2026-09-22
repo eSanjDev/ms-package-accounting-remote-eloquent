@@ -84,7 +84,10 @@ final class ResourceSchema
             $fields,
             self::stringList($payload['includes'] ?? null),
             $relations,
-            self::stringList($payload['actions'] ?? null),
+            self::stringList(array_map(
+                static fn (mixed $action): mixed => is_array($action) ? ($action['name'] ?? null) : $action,
+                is_array($payload['actions'] ?? null) ? $payload['actions'] : [],
+            )),
             $limits,
         );
     }

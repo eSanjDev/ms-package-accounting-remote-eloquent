@@ -181,19 +181,25 @@ final class ApiQueryBuilder extends BaseQueryBuilder
 
     public function toQuerySpec(): QuerySpec
     {
+        $this->applyBeforeQueryCallbacks();
         $this->assertSendableShape();
 
+        $where = $this->translatedWheres();
+        $orders = (new OrderTranslator($this->resource, $this->tableName()))->order($this->orders);
+        $limit = $this->assertedLimit();
+
+        // Last: a query that is refused anyway must not cost a schema fetch.
         $spec = QuerySpec::make()
             ->fields($this->projection())
-            ->where(...$this->translatedWheres())
+            ->where(...$where)
             ->offset($this->offset === null ? 0 : (int) $this->offset)
             ->withTotal($this->withTotal)
             ->trashed($this->trashed)
             ->distinct($this->distinct === true);
 
-        $spec->limit($this->assertedLimit());
+        $spec->limit($limit);
 
-        foreach ((new OrderTranslator($this->resource, $this->tableName()))->order($this->orders) as $order) {
+        foreach ($orders as $order) {
             $spec->order($order['field'], $order['direction']);
         }
 
@@ -215,7 +221,14 @@ final class ApiQueryBuilder extends BaseQueryBuilder
 
     public function projection(): array
     {
-        return $this->fieldsFor($this->columns ?? []);
+        $fields = $this->fieldsFor($this->columns ?? []);
+
+        // Nothing selected: ask for everything readable, so an attribute is never silently null because the server default left it out.
+        if ($fields === [] && $this->validator !== null) {
+            return $this->validator->readableFields($this->resource);
+        }
+
+        return $fields;
     }
 
     public function fieldsFor(array $columns): array
@@ -261,6 +274,8 @@ final class ApiQueryBuilder extends BaseQueryBuilder
 
     protected function runSelect()
     {
+        $this->applyBeforeQueryCallbacks();
+
         if ($this->limit !== null && (int) $this->limit === 0) {
             return [];
         }
@@ -274,6 +289,14 @@ final class ApiQueryBuilder extends BaseQueryBuilder
         );
 
         if ($oversized !== null) {
+            if ($this->distinct === true) {
+                throw UnsupportedQueryException::method(
+                    'distinct() over a list longer than one request',
+                    sprintf('The list has to go out in pieces of %d, and each piece is distinct on its own: the same value would come back once per piece. Narrow the list, or dedupe the rows locally.', $this->listCap()),
+                    $this->context(['builder_method' => 'distinct', 'value_count' => count($oversized[1])]),
+                );
+            }
+
             return $this->sendSplitByValues($oversized[0], $oversized[1]);
         }
 
@@ -336,6 +359,11 @@ final class ApiQueryBuilder extends BaseQueryBuilder
         }
 
         $field = $this->aggregateField($columns);
+
+        // A plain count takes no field on the wire; only distinct()->count('field') names one.
+        if ($function === 'count' && $this->distinct !== true) {
+            $field = null;
+        }
 
         if ($this->distinct === true && ($function !== 'count' || $field === null)) {
             throw UnsupportedQueryException::method(

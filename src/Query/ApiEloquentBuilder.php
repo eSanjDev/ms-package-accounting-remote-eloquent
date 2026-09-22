@@ -40,6 +40,34 @@ final class ApiEloquentBuilder extends EloquentBuilder
         return $query;
     }
 
+    /**
+     * A server-side include comes back as the server shapes it, so a constraint or column list on it would be silently dropped.
+     */
+    public function with($relations, $callback = null)
+    {
+        $items = $callback instanceof Closure
+            ? [$relations => $callback]
+            : (is_string($relations) ? func_get_args() : (array) $relations);
+
+        foreach ($items as $key => $value) {
+            $name = is_int($key) ? $value : $key;
+
+            if (! is_string($name) || $this->model->isRelation(Str::before(Str::before($name, ':'), '.'))) {
+                continue;
+            }
+
+            if (! is_int($key) || str_contains($name, ':')) {
+                throw UnsupportedQueryException::method(
+                    sprintf('with(\'%s\') with a constraint', Str::before($name, ':')),
+                    'An include the server resolves cannot carry a closure or a column list: it would be ignored and every related row returned. Filter the included rows locally, or declare the relation on the model.',
+                    ['builder_method' => 'with', 'include' => Str::before($name, ':')],
+                );
+            }
+        }
+
+        return parent::with(...func_get_args());
+    }
+
     public function find($id, $columns = ['*'])
     {
         if (is_array($id) || $id instanceof Arrayable) {
@@ -344,6 +372,9 @@ final class ApiEloquentBuilder extends EloquentBuilder
 
         return $this->scopes === []
             && $query instanceof ApiQueryBuilder
+            && $query->beforeQueryCallbacks === []
+            && $query->counts() === []
+            && empty($query->lock)
             && $query->wheres === []
             && empty($query->orders)
             && $query->limit === null
@@ -361,6 +392,11 @@ final class ApiEloquentBuilder extends EloquentBuilder
             return null;
         }
 
+        // "schema" or "me" is never a user id; sent as one it would reach a different route.
+        if ($this->model->getKeyType() === 'int' && ! is_int($id) && preg_match('/^-?\d+$/', (string) $id) !== 1) {
+            return null;
+        }
+
         $query = $this->apiQuery();
 
         $this->applyServerSideIncludes();
@@ -370,6 +406,11 @@ final class ApiEloquentBuilder extends EloquentBuilder
         $fields = $query->columns === null
             ? $query->fieldsFor($columns)
             : $query->projection();
+
+        // find() passes ['*']: no explicit choice, so every readable field, as get() does.
+        if ($fields === []) {
+            $fields = $query->projection();
+        }
 
         if ($fields !== []) {
             $options['fields'] = $fields;
@@ -416,7 +457,8 @@ final class ApiEloquentBuilder extends EloquentBuilder
 
         $callback($builder);
 
-        return $builder->apiQuery()->translatedWheres();
+        // The related model's global scopes are part of what "has" means.
+        return $builder->applyScopes()->apiQuery()->translatedWheres();
     }
 
     private function assertRemoteRelation(string $relation, string $method): ?ApiModel

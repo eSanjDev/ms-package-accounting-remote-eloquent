@@ -15,7 +15,9 @@ use Esanj\RemoteEloquent\Query\ApiEloquentBuilder;
 use Esanj\RemoteEloquent\Query\ApiQueryBuilder;
 use Esanj\RemoteEloquent\Schema\SchemaValidator;
 use Esanj\RemoteEloquent\Transport\RemoteResponse;
+use Esanj\RemoteEloquent\Client\ResourceClient;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Container\Container;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
@@ -30,7 +32,14 @@ abstract class ApiModel extends Model
 
     protected string $resource = '';
 
+    /**
+     * Read by Rule::exists()/unique() to route the check to the remote resource instead of a local table.
+     */
+    protected $connection = 'remote-eloquent';
+
     public $timestamps = false;
+
+    private static bool $resolvingActor = false;
 
     private static ?ApiConnection $sharedConnection = null;
 
@@ -129,8 +138,6 @@ abstract class ApiModel extends Model
         }
 
         $resource = $this->resource();
-        $operations = static::remoteOperations();
-        $key = $operations->keyFor('create', $resource, null);
 
         $payload = ['attributes' => $this->remoteWritableAttributes($this->getAttributesForInsert())];
 
@@ -138,11 +145,9 @@ abstract class ApiModel extends Model
             $payload['fields'] = $fields;
         }
 
-        $response = static::remoteTransport()
+        $response = $this->remoteWrite('create', $resource, null, fn (string $key): RemoteResponse => static::remoteTransport()
             ->withActor($this->remoteActor())
-            ->create($resource, $payload, $key);
-
-        $operations->forget('create', $resource, null);
+            ->create($resource, $payload, $key));
 
         $this->exists = true;
         $this->wasRecentlyCreated = true;
@@ -167,25 +172,21 @@ abstract class ApiModel extends Model
         }
 
         $resource = $this->resource();
-        $id = $this->getKeyForSaveQuery();
-        $operations = static::remoteOperations();
-        $key = $operations->keyFor('update', $resource, $this->scalarId($id));
+        $id = $this->scalarId($this->getKeyForSaveQuery());
 
         $payload = ['attributes' => $dirty];
 
-        if (($version = $this->remoteVersion()) !== null) {
-            $payload['if_match'] = $version;
+        if (($ifMatch = $this->remoteIfMatch()) !== []) {
+            $payload['if_match'] = $ifMatch;
         }
 
         if (($fields = $this->remoteFields()) !== []) {
             $payload['fields'] = $fields;
         }
 
-        $response = static::remoteTransport()
+        $response = $this->remoteWrite('update', $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
             ->withActor($this->remoteActor())
-            ->update($resource, $this->scalarId($id), $payload, $key);
-
-        $operations->forget('update', $resource, $this->scalarId($id));
+            ->update($resource, $id, $payload, $key));
 
         $this->syncChanges();
 
@@ -209,21 +210,32 @@ abstract class ApiModel extends Model
         $id = $this->scalarId($this->getKeyForSaveQuery());
         $operation = $force ? 'force_delete' : 'delete';
 
-        $operations = static::remoteOperations();
-        $key = $operations->keyFor($operation, $resource, $id);
-
-        static::remoteTransport()
+        $this->remoteWrite($operation, $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
             ->withActor($this->remoteActor())
-            ->delete($resource, $id, $force, $key);
-
-        $operations->forget($operation, $resource, $id);
+            ->delete($resource, $id, $force, $key));
 
         static::remoteIdentityMap()?->forget($resource, $id);
     }
 
+    private bool $remoteForceDeleting = false;
+
+    /**
+     * DELETE ?force=1 even on a model without RemoteSoftDeletes, so an erasure is never a silent soft delete.
+     */
+    public function forceDelete()
+    {
+        $this->remoteForceDeleting = true;
+
+        try {
+            return $this->delete();
+        } finally {
+            $this->remoteForceDeleting = false;
+        }
+    }
+
     protected function remoteForceDelete(): bool
     {
-        return false;
+        return $this->remoteForceDeleting;
     }
 
     public function remoteAction(string $action, array $payload = []): mixed
@@ -244,15 +256,10 @@ abstract class ApiModel extends Model
         }
 
         $id = $this->scalarId($this->getKeyForSaveQuery());
-        $operations = static::remoteOperations();
-        $operation = 'action:' . $action;
-        $key = $operations->keyFor($operation, $resource, $id);
 
-        $response = static::remoteTransport()
+        $response = $this->remoteWrite('action:' . $action, $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
             ->withActor($this->remoteActor())
-            ->action($resource, $id, $action, $payload, $key);
-
-        $operations->forget($operation, $resource, $id);
+            ->action($resource, $id, $action, $payload, $key));
 
         if ($response->record() !== null) {
             $this->fillFromRemote($response);
@@ -321,13 +328,14 @@ abstract class ApiModel extends Model
             return self::$accessPayload;
         }
 
-        self::$accessResolved = true;
-
         try {
             $data = static::remoteTransport()->access()->data();
         } catch (Throwable) {
-            return self::$accessPayload = null;
+            // Not remembered: an outage must not freeze "unknown, so allowed" for the life of the worker.
+            return null;
         }
+
+        self::$accessResolved = true;
 
         return self::$accessPayload = is_array($data) ? $data : null;
     }
@@ -369,16 +377,25 @@ abstract class ApiModel extends Model
             return self::$pinnedActor;
         }
 
-        $auth = static::remoteResolve('auth');
-
-        if ($auth === null || ! method_exists($auth, 'user')) {
+        // A guard whose provider queries this model would ask for the actor again while resolving it.
+        if (self::$resolvingActor) {
             return null;
         }
 
+        $auth = static::remoteResolve('auth');
+
+        if (! $auth instanceof AuthFactory) {
+            return null;
+        }
+
+        self::$resolvingActor = true;
+
         try {
-            $user = $auth->user();
+            $user = $auth->guard()->user();
         } catch (Throwable) {
             return null;
+        } finally {
+            self::$resolvingActor = false;
         }
 
         return $user instanceof Authenticatable ? $user : null;
@@ -495,11 +512,55 @@ abstract class ApiModel extends Model
         return array_values(array_unique($fields));
     }
 
-    protected function remoteVersion(): string|int|null
+    /**
+     * The optimistic lock the server checks: {field: value as loaded}. Only a field the record was loaded with.
+     *
+     * @return array<string, scalar>
+     */
+    protected function remoteIfMatch(): array
     {
-        $value = $this->original[static::REMOTE_VERSION] ?? null;
+        foreach ([static::REMOTE_VERSION, static::UPDATED_AT] as $field) {
+            if (! is_string($field) || $field === '') {
+                continue;
+            }
 
-        return is_string($value) || is_int($value) ? $value : null;
+            $value = $this->original[$field] ?? null;
+
+            if ($value instanceof \DateTimeInterface) {
+                $value = \DateTimeImmutable::createFromInterface($value)->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z');
+            }
+
+            if (is_string($value) || is_int($value)) {
+                return [$field => $value];
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * One idempotent write: the key survives a timeout or a 5xx for the retry, and is released after an answer the same key would only repeat.
+     *
+     * @param  \Closure(string): RemoteResponse  $send
+     */
+    protected function remoteWrite(string $operation, string $resource, string|int|null $id, \Closure $send): RemoteResponse
+    {
+        $operations = static::remoteOperations();
+        $key = $operations->keyFor($operation, $resource, $id);
+
+        try {
+            $response = $send($key);
+        } catch (Throwable $exception) {
+            if (ResourceClient::isDefinitive($exception)) {
+                $operations->forget($operation, $resource, $id);
+            }
+
+            throw $exception;
+        }
+
+        $operations->forget($operation, $resource, $id);
+
+        return $response;
     }
 
     private static function asStrings(array $values): array

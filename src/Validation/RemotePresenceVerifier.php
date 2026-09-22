@@ -118,8 +118,8 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
         foreach (array_chunk($wanted, $this->pageSize()) as $chunk) {
             $probe = $this->probe($collection);
 
+            // Not distinct: the server offers distinct on few fields, and $found dedupes anyway.
             $probe->select($column)
-                ->distinct()
                 ->whereIn($column, $chunk)
                 ->limit(count($chunk));
 
