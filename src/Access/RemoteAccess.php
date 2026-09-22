@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Esanj\RemoteEloquent\Access;
 
 use Esanj\RemoteEloquent\Contracts\ResourceTransport;
+use Esanj\RemoteEloquent\RemoteEloquentServiceProvider;
 use Esanj\RemoteEloquent\Transport\RateLimitSnapshot;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
@@ -219,16 +220,21 @@ final class RemoteAccess
             return self::$snapshot ??= AccessSnapshot::unknown();
         }
 
+        // A failed lookup is not remembered, so the next call asks again instead of trusting "unknown" for the life of the worker.
         try {
             $response = $transport->access();
         } catch (Throwable) {
-            return self::$snapshot ??= AccessSnapshot::unknown();
+            self::$resolved = false;
+
+            return self::$snapshot ?? AccessSnapshot::unknown();
         }
 
         $data = $response->data();
 
         if (! is_array($data) || $data === []) {
-            return self::$snapshot ??= AccessSnapshot::unknown();
+            self::$resolved = false;
+
+            return self::$snapshot ?? AccessSnapshot::unknown();
         }
 
         // The header wins over the body, as everywhere else in this package.
@@ -253,6 +259,8 @@ final class RemoteAccess
                 // A cache that cannot be written costs another request later, and nothing else.
             }
         }
+
+        self::$rereadUsed = false;
 
         return self::$snapshot = AccessSnapshot::fromArray($data);
     }
@@ -289,8 +297,10 @@ final class RemoteAccess
     private static function cacheKey(): string
     {
         $prefix = self::config('cache.prefix', 'esanj:remote_eloquent:');
+        $config = self::resolve('config');
+        $scope = $config instanceof ConfigRepository ? RemoteEloquentServiceProvider::cacheScope($config) . ':' : '';
 
-        return (is_string($prefix) ? $prefix : 'esanj:remote_eloquent:') . 'access';
+        return (is_string($prefix) ? $prefix : 'esanj:remote_eloquent:') . $scope . 'access';
     }
 
     private static function ttl(): int

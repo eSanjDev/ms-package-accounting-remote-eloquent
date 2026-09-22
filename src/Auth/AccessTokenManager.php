@@ -113,7 +113,7 @@ final class AccessTokenManager implements AccessTokenProvider
 
         try {
             $response = $this->http
-                ->asForm()
+                ->asForm()->withoutRedirecting()
                 ->acceptJson()
                 ->withHeaders($this->headers)
                 ->timeout($this->timeout)

@@ -139,7 +139,7 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
                 $this->text($this->setting($app, 'auth.client_id')),
                 $this->text($this->setting($app, 'auth.client_secret')),
                 (string)($this->setting($app, 'auth.scope') ?? ''),
-                (string)($this->setting($app, 'auth.cache_key') ?? 'esanj:remote_eloquent:token'),
+                (string)($this->setting($app, 'auth.cache_key') ?? 'esanj:remote_eloquent:token') . ':' . self::cacheScope($app->make(ConfigRepository::class)),
                 (int)$this->setting($app, 'auth.refresh_buffer_seconds', 60),
                 (float)$this->setting($app, 'rest.timeout', 5.0),
                 (float)$this->setting($app, 'rest.connect_timeout', 2.0),
@@ -152,7 +152,7 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
             return new ActorTokenManager(
                 $app->make(HttpFactory::class),
                 $this->cache($app),
-                $this->bridge($app),
+                fn () => $this->bridge($app),
                 $this->text($this->setting($app, 'actor.exchange_url')),
                 $this->text($this->setting($app, 'auth.client_id')),
                 $this->text($this->setting($app, 'auth.client_secret')),
@@ -273,6 +273,9 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
                 ['setting' => self::CONFIG_KEY . '.rest.base_url'],
             );
         }
+
+        $this->assertSecureUrl($app, $base, 'rest.base_url');
+        $this->assertSecureUrl($app, $this->text($this->setting($app, 'auth.token_url')), 'auth.token_url');
 
         $headers = $this->setting($app, 'rest.headers', []);
 
@@ -416,6 +419,9 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
         $this->app->make('events')->listen(
             JobProcessing::class,
             function (JobProcessing $event): void {
+                // A job that failed before forgetRemoteActor() must not hand its actor to the next one.
+                ApiModel::forgetRemoteActor();
+
                 $job = $event->job;
 
                 if (!$job instanceof QueuedJob) {
@@ -499,7 +505,40 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
 
     private function cachePrefix(Container $app): string
     {
-        return (string)($this->setting($app, 'cache.prefix') ?? 'esanj:remote_eloquent:');
+        return (string)($this->setting($app, 'cache.prefix') ?? 'esanj:remote_eloquent:') . self::cacheScope($app->make(ConfigRepository::class)) . ':';
+    }
+
+    /**
+     * The client secret and every token travel on these URLs: plain http is refused outside local and testing.
+     */
+    private function assertSecureUrl(Container $app, ?string $url, string $setting): void
+    {
+        if ($url === null || strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https') {
+            return;
+        }
+
+        $environment = $app instanceof \Illuminate\Contracts\Foundation\Application ? $app->environment() : 'production';
+
+        if (in_array($environment, ['local', 'testing'], true)) {
+            return;
+        }
+
+        throw new InvalidArgumentException(sprintf(
+            'The remote-eloquent "%s" setting must be an https URL outside the local and testing environments; "%s" would send the client secret and tokens in clear text.',
+            $setting,
+            $url,
+        ));
+    }
+
+    /**
+     * Which application and which server a cached token, schema or snapshot belongs to: two services sharing a store never read each other's.
+     */
+    public static function cacheScope(ConfigRepository $config): string
+    {
+        $clientId = $config->get(self::CONFIG_KEY . '.auth.client_id');
+        $baseUrl = $config->get(self::CONFIG_KEY . '.rest.base_url');
+
+        return substr(hash('sha256', (is_scalar($clientId) ? (string) $clientId : '') . '|' . (is_scalar($baseUrl) ? (string) $baseUrl : '')), 0, 12);
     }
 
     private function logger(Container $app): ?LoggerInterface

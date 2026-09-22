@@ -27,8 +27,6 @@ return [
         'client_secret' => env('REMOTE_ELOQUENT_CLIENT_SECRET', env('ACCOUNTING_BRIDGE_CLIENT_SECRET')),
         'scope' => env('REMOTE_ELOQUENT_SCOPE', ''),
 
-        // Cache store holding the access token (null = the default store).
-        'cache_store' => env('REMOTE_ELOQUENT_CACHE_STORE'),
         'cache_key' => env('REMOTE_ELOQUENT_TOKEN_CACHE_KEY', 'esanj:remote_eloquent:token'),
         'refresh_buffer_seconds' => (int) env('REMOTE_ELOQUENT_REFRESH_BUFFER', 60),
     ],
