@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Esanj\RemoteEloquent\Auth;
 
+use Closure;
 use Esanj\AuthBridge\Contracts\AuthBridgeServiceInterface;
 use Esanj\RemoteEloquent\Contracts\ActorTokenProvider;
 use Esanj\RemoteEloquent\Exceptions\RemoteAuthenticationException;
@@ -31,7 +32,7 @@ final class ActorTokenManager implements ActorTokenProvider
     public function __construct(
         private readonly HttpFactory                 $http,
         private readonly ?CacheRepository            $cache = null,
-        private readonly ?AuthBridgeServiceInterface $bridge = null,
+        private readonly AuthBridgeServiceInterface|Closure|null $bridge = null,
         private readonly ?string                     $exchangeUrl = null,
         private readonly ?string                     $clientId = null,
         private readonly ?string                     $clientSecret = null,
@@ -49,6 +50,30 @@ final class ActorTokenManager implements ActorTokenProvider
     public function tokenType(): string
     {
         return $this->tokenType === '' ? 'Bearer' : $this->tokenType;
+    }
+
+    /**
+     * The signed-in user's own access token, or null when there is none.
+     */
+    public function userToken(): ?string
+    {
+        try {
+            $token = $this->subjectTokenIsPinned ? $this->pinnedSubjectToken : $this->bridge()?->getValidAccessToken();
+        } catch (Throwable) {
+            return null;
+        }
+
+        return is_string($token) && trim($token) !== '' ? trim($token) : null;
+    }
+
+    /**
+     * Resolved per call: the bridge is request-scoped and this manager is not.
+     */
+    private function bridge(): ?AuthBridgeServiceInterface
+    {
+        $bridge = $this->bridge instanceof Closure ? ($this->bridge)() : $this->bridge;
+
+        return $bridge instanceof AuthBridgeServiceInterface ? $bridge : null;
     }
 
     /**
@@ -120,7 +145,7 @@ final class ActorTokenManager implements ActorTokenProvider
 
         $subject = $this->subjectTokenIsPinned
             ? $this->pinnedSubjectToken
-            : $this->bridge?->getValidAccessToken();
+            : $this->bridge()?->getValidAccessToken();
 
         if (!is_string($subject) || $subject === '') {
             return;
@@ -139,7 +164,7 @@ final class ActorTokenManager implements ActorTokenProvider
     {
         $token = $this->subjectTokenIsPinned
             ? $this->pinnedSubjectToken
-            : $this->bridge?->getValidAccessToken();
+            : $this->bridge()?->getValidAccessToken();
 
         $token = is_string($token) ? trim($token) : '';
 
@@ -244,7 +269,7 @@ final class ActorTokenManager implements ActorTokenProvider
 
         try {
             $response = $this->http
-                ->asForm()
+                ->asForm()->withoutRedirecting()
                 ->acceptJson()
                 ->timeout($this->timeout)
                 ->connectTimeout($this->connectTimeout)

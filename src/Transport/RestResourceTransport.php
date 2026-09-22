@@ -151,11 +151,13 @@ final class RestResourceTransport implements ResourceTransport
     }
 
     /**
-     * @param  array<string, mixed>  $options  fields, include
+     * @param  array<string, mixed>  $options  fields, include, token (the user's own access token)
      */
     public function me(array $options = []): RemoteResponse
     {
-        return $this->client->me($this->names($options, 'fields'), $this->names($options, 'include'));
+        $token = is_string($options['token'] ?? null) ? $options['token'] : null;
+
+        return $this->client->me($this->names($options, 'fields'), $this->names($options, 'include'), $token);
     }
 
     public function access(): RemoteResponse

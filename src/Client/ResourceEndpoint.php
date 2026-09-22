@@ -222,7 +222,7 @@ final class ResourceEndpoint
     }
 
     /**
-     * POST {resource}/{id}/actions/{action} — the body is the action payload.
+     * POST {resource}/{id}/actions/{action} — {"payload": {...}}; the server reads nothing else.
      *
      * @param  array<string, mixed>  $payload
      */
@@ -237,7 +237,7 @@ final class ResourceEndpoint
             'POST',
             $this->path($id, 'actions', $action),
             $this->resource,
-            $payload,
+            ['payload' => (object) $payload],
             idempotencyKey: $idempotencyKey,
             id: $id,
         );

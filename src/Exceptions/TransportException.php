@@ -58,6 +58,22 @@ final class TransportException extends RemoteEloquentException implements HttpEx
         );
     }
 
+    public static function serverError(
+        int     $status,
+        string  $code,
+        ?string $requestId = null,
+        array   $context = [],
+    ): self
+    {
+        return new self(
+            sprintf('The account service failed while handling this call (%d%s). Quote the request id when reporting it.', $status, $code !== '' ? ' ' . $code : ''),
+            $code !== '' ? $code : 'internal_error',
+            $status,
+            $requestId,
+            $context,
+        );
+    }
+
     public static function malformedResponse(
         string     $reason,
         ?string    $requestId = null,

@@ -12,6 +12,7 @@ use Esanj\RemoteEloquent\Exceptions\ConflictException;
 use Esanj\RemoteEloquent\Exceptions\InvalidQueryException;
 use Esanj\RemoteEloquent\Exceptions\RateLimitedException;
 use Esanj\RemoteEloquent\Exceptions\RemoteAuthenticationException;
+use Esanj\RemoteEloquent\Exceptions\RemoteEloquentException;
 use Esanj\RemoteEloquent\Exceptions\RemoteTimeoutException;
 use Esanj\RemoteEloquent\Exceptions\RemoteValidationException;
 use Esanj\RemoteEloquent\Exceptions\TransportException;
@@ -50,9 +51,20 @@ final class ResourceClient
 
     private const TIMED_OUT = '/timed out|timeout/i';
 
+    private const REQUEST_ID = '/^[A-Za-z0-9._:-]{8,64}$/';
+
+    /**
+     * A 401 forces a fresh application token at most once per this many seconds.
+     */
+    private const FORCED_REFRESH_SECONDS = 30;
+
     private ?Authenticatable $actor = null;
 
     private ?string $requestId = null;
+
+    private ?string $userToken = null;
+
+    private float $lastForcedRefreshAt = 0.0;
 
     /** @var array<string, true> */
     private array $deprecationsSeen = [];
@@ -98,17 +110,22 @@ final class ResourceClient
      * @param  array<int, string>  $fields
      * @param  array<int, string>  $include
      */
-    public function me(array $fields = [], array $include = []): RemoteResponse
+    public function me(array $fields = [], array $include = [], ?string $userToken = null): RemoteResponse
     {
-        if ($this->actor === null) {
+        $userToken = $userToken !== null && trim($userToken) !== '' ? trim($userToken) : $this->signedInToken();
+
+        if ($userToken === null) {
             throw AccessDeniedException::actorDenied('users', 'me', null, null, [
                 'transport' => $this->transport,
                 'operation' => 'me',
-                'hint' => 'GET users/me is answered with the signed-in person\'s token. Bind one first: ' . self::class . '::withActor($user).',
+                'hint' => 'GET users/me is answered with the signed-in person\'s own access token, and none is available: sign the user in through esanj/auth-bridge or pass the token.',
             ]);
         }
 
-        return $this->call('me', 'GET', 'users/me', 'users', query: $this->listQuery([
+        $copy = clone $this;
+        $copy->userToken = $userToken;
+
+        return $copy->call('me', 'GET', 'users/me', 'users', query: $this->listQuery([
             'fields' => $fields,
             'include' => $include,
         ]));
@@ -200,13 +217,64 @@ final class ResourceClient
             ? ($operations?->keyFor($operation, $resource, $id) ?? self::uuid())
             : $given;
 
-        $response = $this->send($operation, $method, $path, $resource, $payload, $query, $headers, $key, $id, true);
+        try {
+            $response = $this->send($operation, $method, $path, $resource, $payload, $query, $headers, $key, $id, true);
+        } catch (Throwable $exception) {
+            if ($minted && self::isDefinitive($exception)) {
+                $operations?->forget($operation, $resource, $id);
+            }
+
+            throw $exception;
+        } finally {
+            // The server spends an actor token on the first mutation it sees.
+            $this->forgetActorToken();
+        }
 
         if ($minted) {
             $operations?->forget($operation, $resource, $id);
         }
 
         return $response;
+    }
+
+    /**
+     * A refusal the same key would only repeat; timeouts, 5xx, 429 and 409 in_progress keep the key for the retry.
+     */
+    public static function isDefinitive(Throwable $exception): bool
+    {
+        if ($exception instanceof RemoteValidationException) {
+            return true;
+        }
+
+        if (! $exception instanceof RemoteEloquentException) {
+            return $exception instanceof ModelNotFoundException;
+        }
+
+        $status = $exception->status();
+
+        if ($status === 409) {
+            return $exception->errorCode() !== 'idempotency_in_progress';
+        }
+
+        return $status >= 400 && $status < 500 && $status !== 429;
+    }
+
+    private function forgetActorToken(): void
+    {
+        if ($this->actor !== null && method_exists($this->actorTokens, 'forget')) {
+            $this->actorTokens->forget($this->actor);
+        }
+    }
+
+    private function signedInToken(): ?string
+    {
+        if (! method_exists($this->actorTokens, 'userToken')) {
+            return null;
+        }
+
+        $token = $this->actorTokens->userToken();
+
+        return is_string($token) && trim($token) !== '' ? trim($token) : null;
     }
 
     /**
@@ -285,21 +353,22 @@ final class ResourceClient
 
             RemoteAccess::observe($response->permissionsVersion(), $response->rateLimit());
 
-            if ($status < 400) {
+            if ($status < 300 || $status === 304) {
                 $this->warnIfDeprecated($response, $operation, $resource, $path);
 
                 return $response;
             }
 
-            // A revoked token looks exactly like a misconfigured one until the refresh has been tried.
-            if ($status === 401 && ! $refreshed) {
+            // A revoked token looks exactly like a misconfigured one until the refresh has been tried; users/me carries the user's token, not ours.
+            if ($status === 401 && ! $refreshed && $operation !== 'me' && $this->mayForceRefresh()) {
                 $refreshed = true;
                 $freshToken = true;
 
                 continue;
             }
 
-            if ($status === 404 && $code === 'user_merged' && ! $followed && $id !== null) {
+            // A write is never silently re-aimed at another record.
+            if ($status === 404 && $code === 'user_merged' && ! $mutating && ! $followed && $id !== null) {
                 $target = $this->mergeTarget($error);
                 $retargeted = $target === null ? $path : $this->retarget($path, $id, $target);
 
@@ -348,7 +417,8 @@ final class ResourceClient
             $built['Idempotency-Key'] = $idempotencyKey;
         }
 
-        if ($mutating || $operation === 'me') {
+        // validate presents the actor without spending it, so the same token can still carry the create.
+        if ($mutating || $operation === 'validate') {
             $actorToken = $this->actorTokens->actorTokenFor($this->actor);
 
             if ($actorToken !== null && $actorToken !== '') {
@@ -356,12 +426,30 @@ final class ResourceClient
             }
         }
 
+        $bearer = $operation === 'me' && $this->userToken !== null
+            ? $this->userToken
+            : $this->accessTokens->getAccessToken($freshToken);
+
         return $this->request()
             ->acceptJson()
+            ->withoutRedirecting()
             ->timeout($this->timeout)
             ->connectTimeout($this->connectTimeout)
-            ->withToken($this->accessTokens->getAccessToken($freshToken))
+            ->withToken($bearer)
             ->withHeaders(array_merge($this->headers, $headers, $built));
+    }
+
+    private function mayForceRefresh(): bool
+    {
+        $now = microtime(true);
+
+        if ($now - $this->lastForcedRefreshAt < self::FORCED_REFRESH_SECONDS) {
+            return false;
+        }
+
+        $this->lastForcedRefreshAt = $now;
+
+        return true;
     }
 
     private function request(): PendingRequest
@@ -520,8 +608,11 @@ final class ResourceClient
                 $message,
             ),
 
+            $status === 405 || $status === 415 => InvalidQueryException::fromServer($code, $message, $status, $requestId, $context),
+
             $status === 503 => TransportException::unavailable($requestId, $context, $message),
             $status === 504 => RemoteTimeoutException::fromServer($message, $status, $requestId, $context),
+            $status >= 500 => TransportException::serverError($status, $code, $requestId, $context),
 
             default => TransportException::unexpectedStatus($status, $requestId, $context),
         };
@@ -762,7 +853,7 @@ final class ResourceClient
             return null;
         }
 
-        return is_string($id) && trim($id) !== '' ? trim($id) : null;
+        return is_string($id) && preg_match(self::REQUEST_ID, trim($id)) === 1 ? trim($id) : null;
     }
 
     /**

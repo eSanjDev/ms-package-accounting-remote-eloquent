@@ -55,6 +55,11 @@ final class AccountingGuard implements StatefulGuard
     /** @var array<string, Key>|null */
     private ?array $jwks = null;
 
+    private const JWKS_REFETCH_SECONDS = 30;
+
+    /** @var array<string, int> */
+    private static array $lastRefetch = [];
+
     private ?string $publicKeyMaterial = null;
 
     /**
@@ -89,6 +94,14 @@ final class AccountingGuard implements StatefulGuard
         private readonly string                      $cachePrefix = 'esanj:remote_eloquent:',
     )
     {
+        // Asymmetric only: an HS* algorithm would accept a token signed with the public key as its secret.
+        if (preg_match('/^(RS|PS)(256|384|512)$|^ES(256|384|512)$/', $this->algorithm) !== 1) {
+            throw new InvalidArgumentException(sprintf(
+                'The "%s" guard\'s algorithm must be RS256/384/512, PS256/384/512 or ES256/384/512; "%s" given.',
+                $this->name,
+                $this->algorithm,
+            ));
+        }
     }
 
     public function name(): string
@@ -102,7 +115,7 @@ final class AccountingGuard implements StatefulGuard
             return true;
         }
 
-        return $this->verifiedClaims() !== null;
+        return $this->subject() !== null;
     }
 
     public function guest(): bool
@@ -164,13 +177,13 @@ final class AccountingGuard implements StatefulGuard
         } finally {
             $this->resolving = false;
             $this->claimsUser = null;
+            // A failed resolve is remembered for the request instead of costing another round trip per call.
+            $this->resolved = true;
         }
 
         if ($user !== null) {
             $this->assertResolvedSubject($user, $subject);
         }
-
-        $this->resolved = true;
 
         return $this->user = $user;
     }
@@ -346,9 +359,12 @@ final class AccountingGuard implements StatefulGuard
 
         $subject = (string)$subject;
 
-        return $this->provider->createModel()->getKeyType() === 'int' && ctype_digit($subject)
-            ? (int)$subject
-            : $subject;
+        if ($this->provider->createModel()->getKeyType() !== 'int') {
+            return $subject;
+        }
+
+        // A client-credentials token names the client in "sub"; that is an application, never a signed-in user.
+        return ctype_digit($subject) ? (int)$subject : null;
     }
 
     private function verifiedClaims(): ?array
@@ -532,9 +548,37 @@ final class AccountingGuard implements StatefulGuard
             return $keys[$kid];
         }
 
+        // An unknown kid from an anonymous caller must not turn into one JWKS request each.
+        if (! $this->mayRefetchKeySet()) {
+            return null;
+        }
+
         $keys = $this->keySet(true);
 
         return $keys[$kid] ?? null;
+    }
+
+    private function mayRefetchKeySet(): bool
+    {
+        $key = $this->cachePrefix . 'jwks_refetch:' . sha1((string)$this->jwksUrl);
+
+        if ($this->cache !== null) {
+            try {
+                return $this->cache->add($key, 1, self::JWKS_REFETCH_SECONDS);
+            } catch (Throwable) {
+                // Fall through to the per-process throttle.
+            }
+        }
+
+        $last = self::$lastRefetch[$key] ?? 0;
+
+        if (time() - $last < self::JWKS_REFETCH_SECONDS) {
+            return false;
+        }
+
+        self::$lastRefetch[$key] = time();
+
+        return true;
     }
 
     private function keySet(bool $fresh = false): array
@@ -681,7 +725,7 @@ final class AccountingGuard implements StatefulGuard
         try {
             $response = $class::remoteTransport()
                 ->withActor($this->claimsUser)
-                ->me($this->meOptions);
+                ->me($this->meOptions + ['token' => $this->resolveToken()]);
         } catch (ModelNotFoundException) {
             return $this->reject('the token\'s subject no longer exists');
         }
