@@ -6,6 +6,7 @@ namespace Esanj\RemoteEloquent\Console;
 
 use Esanj\RemoteEloquent\Contracts\ResourceTransport;
 use Esanj\RemoteEloquent\Models\ApiModel;
+use Esanj\RemoteEloquent\RemoteEloquentServiceProvider;
 use Esanj\RemoteEloquent\Schema\SchemaRepository;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
@@ -333,8 +334,7 @@ final class RemoteDoctorCommand extends Command
     {
         $contents = $this->files->get($file->getPathname());
 
-        if (! str_contains($contents, 'exists:') && ! str_contains($contents, 'unique:')
-            && ! str_contains($contents, 'Rule::exists') && ! str_contains($contents, 'Rule::unique')) {
+        if (! str_contains($contents, 'exists:') && ! str_contains($contents, 'unique:')) {
             return 0;
         }
 
@@ -363,19 +363,6 @@ final class RemoteDoctorCommand extends Command
                         $table,
                     ),
                 );
-            }
-
-            if (preg_match('/Rule::(exists|unique)\s*\(\s*([A-Za-z0-9_\\\\]+)::class/', $line, $ruleMatch) === 1) {
-                $class = class_basename(str_replace('\\\\', '\\', $ruleMatch[2]));
-
-                if (in_array($class, $shortNames, true)) {
-                    $found++;
-
-                    $this->reportProblem(
-                        sprintf('%s:%d  Rule::%s(%s::class)', $this->relative($file->getPathname()), $number + 1, $ruleMatch[1], $class),
-                        'Rule::' . $ruleMatch[1] . '() compiles a query on the model\'s connection, which for a remote model is the API connection and refuses to run SQL. Use the resource API\'s validate endpoint.',
-                    );
-                }
             }
         }
 
@@ -410,6 +397,13 @@ final class RemoteDoctorCommand extends Command
                 $this->reportProblem($class . ' has no $resource', $exception->getMessage());
 
                 continue;
+            }
+
+            if ($model->getConnectionName() !== RemoteEloquentServiceProvider::CONNECTION) {
+                $this->reportProblem(
+                    sprintf('%s names the "%s" connection', $class, (string) $model->getConnectionName()),
+                    'Rule::exists()/unique() pick the verifier by connection name, so this model\'s rules run against a local table. Remove the $connection override; ApiModel sets "' . RemoteEloquentServiceProvider::CONNECTION . '".',
+                );
             }
 
             if (! $schemas instanceof SchemaRepository) {

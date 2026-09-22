@@ -190,9 +190,9 @@ final class RemoteModelCommand extends Command
             $lines[] = '';
         }
 
-        $lines[] = '    protected string $resource = \'' . $resource . '\';';
+        $lines[] = '    protected string $resource = ' . var_export($resource, true) . ';';
         $lines[] = '';
-        $lines[] = '    protected $primaryKey = \'' . $schema->key() . '\';';
+        $lines[] = '    protected $primaryKey = ' . var_export($schema->key(), true) . ';';
         $lines[] = '';
 
         $keyIsInt = in_array(strtolower($schema->keyType()), ['int', 'integer', 'bigint'], true);
@@ -208,7 +208,7 @@ final class RemoteModelCommand extends Command
         $lines[] = '    protected $fillable = [';
 
         foreach ($this->writableFields($schema) as $field) {
-            $lines[] = '        \'' . $field . '\',';
+            $lines[] = '        ' . var_export($field, true) . ',';
         }
 
         $lines[] = '    ];';
@@ -220,7 +220,7 @@ final class RemoteModelCommand extends Command
             $lines[] = '    protected $casts = [';
 
             foreach ($casts as $field => $cast) {
-                $lines[] = '        \'' . $field . '\' => \'' . $cast . '\',';
+                $lines[] = '        ' . var_export($field, true) . ' => ' . var_export($cast, true) . ',';
             }
 
             $lines[] = '    ];';
@@ -239,39 +239,51 @@ final class RemoteModelCommand extends Command
     {
         $lines = [
             '/**',
-            ' * ' . ($schema->versionTag() !== '' ? $schema->versionTag() : $resource)
-                . ' - generated from the remote schema by `php artisan remote:model ' . $resource . '`.',
+            ' * ' . $this->docText($schema->versionTag() !== '' ? $schema->versionTag() : $resource)
+                . ' - generated from the remote schema by `php artisan remote:model ' . $this->docText($resource) . '`.',
             ' *',
             ' * This file is not regenerated. Once it carries a relation or a scope, the',
-            ' * schema no longer describes all of it; `php artisan remote:schema ' . $resource . ' --diff`',
+            ' * schema no longer describes all of it; `php artisan remote:schema ' . $this->docText($resource) . ' --diff`',
             ' * reports where the two have drifted apart.',
             ' *',
         ];
 
         foreach ($schema->fields() as $name => $field) {
+            if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', (string) $name) !== 1) {
+                continue;
+            }
+
             $lines[] = ' * @property ' . $this->propertyType($field) . ' $' . $name
                 . ($field->isDeprecated()
-                    ? '  deprecated' . ($field->deprecation() === null ? '' : ': ' . $field->deprecation())
+                    ? '  deprecated' . ($field->deprecation() === null ? '' : ': ' . $this->docText($field->deprecation()))
                     : '');
         }
 
         if ($schema->includes() !== []) {
             $lines[] = ' *';
-            $lines[] = ' * Includes published by the server: ' . implode(', ', $schema->includes());
+            $lines[] = ' * Includes published by the server: ' . $this->docText(implode(', ', $schema->includes()));
         }
 
         if ($schema->actions() !== []) {
             $lines[] = ' *';
-            $lines[] = ' * Actions: $model->remoteAction(\'' . $schema->actions()[0] . '\', [...])';
+            $lines[] = ' * Actions: $model->remoteAction(' . $this->docText(var_export($schema->actions()[0], true)) . ', [...])';
 
             foreach ($schema->actions() as $action) {
-                $lines[] = ' *   - ' . $action;
+                $lines[] = ' *   - ' . $this->docText($action);
             }
         }
 
         $lines[] = ' */';
 
         return $lines;
+    }
+
+    /**
+     * Schema text inside a docblock: it can neither close the comment nor start a new line.
+     */
+    private function docText(string $text): string
+    {
+        return str_replace(['*/', "\r", "\n"], ['* /', ' ', ' '], $text);
     }
 
     private function propertyType(FieldDefinition $field): string
