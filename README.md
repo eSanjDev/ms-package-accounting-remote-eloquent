@@ -484,6 +484,16 @@ that needed case folding fails loudly here instead of passing on MySQL and faili
 
 ---
 
+## Upgrading to 2.0.2
+
+- **Laravel 11, 13 and the latest 12.x load**: 2.0.1 stopped with a fatal signature error on the first remote query.
+- **A revoked sign-in token makes the user a guest** (with a logged warning) instead of a 500.
+- **A job run with `dispatchSync()` keeps its caller's actor and Idempotency-Keys**, so a retried outer job no
+  longer re-applies the writes it made after the inner one.
+- **`http://` is refused outside `local`/`testing`** for `actor.exchange_url` and a guard's `jwks_url` too, and
+  for `auth.token_url` however the token provider is resolved.
+- **`count('column')` throws** instead of silently counting every row; write `->whereNotNull('column')->count()`.
+
 ## Further reading
 
 [`docs/GUIDE.md`](docs/GUIDE.md) — the long version: the QuerySpec itself, every refusal with a worked
