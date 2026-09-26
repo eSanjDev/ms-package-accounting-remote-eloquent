@@ -307,11 +307,4 @@ trait RemoteSoftDeletes
 
         return $base;
     }
-
-    private function remoteKey(): string|int
-    {
-        $id = $this->getKeyForSaveQuery();
-
-        return is_int($id) ? $id : (string) $id;
-    }
 }

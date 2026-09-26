@@ -172,7 +172,7 @@ abstract class ApiModel extends Model
         }
 
         $resource = $this->resource();
-        $id = $this->scalarId($this->getKeyForSaveQuery());
+        $id = $this->remoteKey();
 
         $payload = ['attributes' => $dirty];
 
@@ -207,7 +207,7 @@ abstract class ApiModel extends Model
     protected function remoteDelete(bool $force): void
     {
         $resource = $this->resource();
-        $id = $this->scalarId($this->getKeyForSaveQuery());
+        $id = $this->remoteKey();
         $operation = $force ? 'force_delete' : 'delete';
 
         $this->remoteWrite($operation, $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
@@ -255,7 +255,7 @@ abstract class ApiModel extends Model
             );
         }
 
-        $id = $this->scalarId($this->getKeyForSaveQuery());
+        $id = $this->remoteKey();
 
         $response = $this->remoteWrite('action:' . $action, $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
             ->withActor($this->remoteActor())
@@ -279,7 +279,7 @@ abstract class ApiModel extends Model
         return $this->sendValidate(
             $this->exists ? 'update' : 'create',
             $attributes,
-            $this->exists ? $this->scalarId($this->getKeyForSaveQuery()) : null,
+            $this->exists ? $this->remoteKey() : null,
         );
     }
 
@@ -592,6 +592,21 @@ abstract class ApiModel extends Model
             ->validate($this->resource(), $payload);
 
         return true;
+    }
+
+    protected function remoteKey(): string|int
+    {
+        $id = $this->getKeyForSaveQuery();
+
+        if ($id === null || $id === '') {
+            throw UnsupportedQueryException::method(
+                sprintf('Writing a "%s" record that has no %s', $this->resource(), $this->getKeyName()),
+                'Load the record, or set its key, before saving, deleting, restoring or running an action on it.',
+                ['resource' => $this->resource(), 'model' => static::class],
+            );
+        }
+
+        return $this->scalarId($id);
     }
 
     private function scalarId(mixed $id): string|int
