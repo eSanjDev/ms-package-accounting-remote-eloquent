@@ -26,7 +26,7 @@
         "illuminate/validation": "^11.0|^12.0|^13.0"
     },
     "suggest": {
-        "firebase/php-jwt": "Required by the \"accounting\" auth guard to verify the end user's token locally (^6.0).",
+        "firebase/php-jwt": "Required by the \"accounting\" auth guard to verify the end user's token locally (^7.0).",
         "esanj/auth-bridge": "Supplies the OAuth flow, the session token and the signing key the guard and the actor-token exchange reuse.",
         "phpunit/phpunit": "Required by Esanj\\RemoteEloquent\\Testing\\FakeResourceTransport's assertions (^10.0|^11.0|^12.0)."
     },
