@@ -551,12 +551,24 @@ final class RemoteDoctorCommand extends Command
 
             $class = $namespace . str_replace(['/', '.php'], ['\\', ''], $file->getRelativePathname());
 
-            if ($this->isApiModel($class)) {
+            // Autoloading a file that declares no such class can be fatal.
+            if ($this->declaresClass($file->getPathname(), class_basename($class)) && $this->isApiModel($class)) {
                 $classes[] = $class;
             }
         }
 
         return $classes;
+    }
+
+    private function declaresClass(string $path, string $name): bool
+    {
+        try {
+            $source = $this->files->get($path);
+        } catch (Throwable) {
+            return false;
+        }
+
+        return preg_match('/^\s*(?:(?:abstract|final|readonly)\s+)*class\s+' . preg_quote($name, '/') . '\b/m', $source) === 1;
     }
 
     private function isApiModel(string $class): bool
