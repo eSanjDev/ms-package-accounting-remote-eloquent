@@ -222,6 +222,7 @@ final class AccessSnapshot
             }
         }
 
-        return array_keys($clean);
+        // Numeric-string keys come back as ints.
+        return array_map('strval', array_keys($clean));
     }
 }
