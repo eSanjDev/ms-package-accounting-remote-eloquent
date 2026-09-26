@@ -362,6 +362,14 @@ final class ApiQueryBuilder extends BaseQueryBuilder
 
         // A plain count takes no field on the wire; only distinct()->count('field') names one.
         if ($function === 'count' && $this->distinct !== true) {
+            if ($field !== null && $field !== $this->keyName) {
+                throw UnsupportedQueryException::method(
+                    sprintf('count(\'%s\')', $field),
+                    sprintf('count(column) skips NULLs in SQL, and the resource API counts rows. Say so explicitly: ->whereNotNull(\'%s\')->count().', $field),
+                    $this->context(['aggregate' => 'count', 'field' => $field]),
+                );
+            }
+
             $field = null;
         }
 
@@ -481,7 +489,8 @@ final class ApiQueryBuilder extends BaseQueryBuilder
 
     public function getCountForPagination($columns = ['*']): int
     {
-        return $this->count($columns === ['*'] ? '*' : ($columns[0] ?? '*'));
+        // A page total counts rows, not a column's non-null values.
+        return $this->count($this->distinct === true ? ($columns[0] ?? '*') : '*');
     }
 
     /**
