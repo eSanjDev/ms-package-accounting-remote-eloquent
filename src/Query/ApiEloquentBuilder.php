@@ -178,6 +178,10 @@ final class ApiEloquentBuilder extends EloquentBuilder
             ? $this->assertRemoteRelation($root, 'whereHas')
             : null;
 
+        if ($related !== null) {
+            $this->assertRelationAddsNothing($root);
+        }
+
         $conditions = [];
 
         if ($callback !== null) {
@@ -479,7 +483,34 @@ final class ApiEloquentBuilder extends EloquentBuilder
         $callback($builder);
 
         // The related model's global scopes are part of what "has" means.
-        return $builder->applyScopes()->apiQuery()->translatedWheres();
+        $scoped = $builder->applyScopes();
+
+        if ($scoped->apiQuery()->trashedMode() !== null) {
+            throw UnsupportedQueryException::method(
+                sprintf('withTrashed()/onlyTrashed() inside whereHas(\'%s\')', $relation),
+                'A has clause carries field conditions only; the server applies its default trashed state to the related records. Query the related resource on its own with the trashed state you need, and pass the ids to whereIn().',
+                ['builder_method' => 'whereHas', 'relation' => $relation],
+            );
+        }
+
+        return $scoped->apiQuery()->translatedWheres();
+    }
+
+    private function assertRelationAddsNothing(string $relation): void
+    {
+        $query = $this->getRelation($relation)->getQuery();
+
+        if (!$query instanceof self) {
+            return;
+        }
+
+        if ($query->apiQuery()->wheres !== [] || $query->apiQuery()->trashedMode() !== null) {
+            throw UnsupportedQueryException::method(
+                sprintf('whereHas(\'%s\') on a relation that adds conditions of its own', $relation),
+                sprintf('The server applies "%s" as it publishes it, without the where() or trashed state its definition adds. Move the where() conditions into the whereHas() closure.', $relation),
+                ['builder_method' => 'whereHas', 'relation' => $relation],
+            );
+        }
     }
 
     private function assertRemoteRelation(string $relation, string $method): ?ApiModel
