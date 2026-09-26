@@ -39,6 +39,7 @@ use Illuminate\Database\LazyLoadingViolationException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobProcessing;
+use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\PresenceVerifierInterface;
 use InvalidArgumentException;
@@ -423,6 +424,11 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
         $this->app->make('events')->listen(
             JobProcessing::class,
             function (JobProcessing $event): void {
+                // A sync job runs inside its caller and keeps the caller's scope and actor.
+                if ($event->job instanceof SyncJob) {
+                    return;
+                }
+
                 // A job that failed before forgetRemoteActor() must not hand its actor to the next one.
                 ApiModel::forgetRemoteActor();
 

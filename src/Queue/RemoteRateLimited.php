@@ -9,6 +9,7 @@ use Esanj\RemoteEloquent\Exceptions\RateLimitedException;
 use Esanj\RemoteEloquent\Idempotency\OperationContext;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Queue\Job as QueuedJob;
+use Illuminate\Queue\Jobs\SyncJob;
 use Throwable;
 
 /**
@@ -69,7 +70,7 @@ final class RemoteRateLimited
     {
         $queued = $job->job ?? null;
 
-        if (! $queued instanceof QueuedJob) {
+        if (! $queued instanceof QueuedJob || $queued instanceof SyncJob) {
             return null;
         }
 
