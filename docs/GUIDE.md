@@ -1006,6 +1006,8 @@ Each throws before any network call, naming the alternative.
 | unbounded `pluck()` | `->limit(n)->pluck(...)` |
 | `cursorPaginate()` | `paginate()`, `simplePaginate()` |
 | `chunk()`, `lazy()`, `cursor()`, `each()` | `chunkById()`, `lazyById()`, `eachById()` |
+| `count('column')` | `->whereNotNull('column')->count()` |
+| `whereHas()` with `withTrashed()`/`onlyTrashed()`, or on a relation whose definition adds a `where()` | the `where()` in the closure; for trashed, the related ids through `whereIn()` |
 | `firstOrCreate()`, `createOrFirst()`, `updateOrCreate()`, `incrementOrCreate()`, `upsert()` | `first()` then `create()`, or a domain action |
 | `restoreOrCreate()`, `createOrRestore()` | the same |
 | builder `update()` / `delete()` / `forceDelete()` / `touch()` | load the page, write each model |

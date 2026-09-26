@@ -140,7 +140,7 @@ Everything here works, and works the way it reads:
 | **Order** | `orderBy`, `latest`, `oldest`, `reorder` |
 | **Page** | `limit`/`take`, `offset`/`skip`, `paginate`, `simplePaginate` |
 | **Aggregate** | `count`, `exists`, `doesntExist`, `min`, `max`, `sum`, `avg` |
-| **Walk** | `chunkById`, `lazyById`, `eachById` |
+| **Walk** | `chunkById`, `lazyById`, `eachById` — pages are capped at `limits.max_query_limit` |
 | **Write** | `create`, `save`, `update` on a model, `delete`, `destroy` |
 | **Soft delete** | `RemoteSoftDeletes`: `withTrashed`, `onlyTrashed`, `restore`, `forceDelete`, `trashed` |
 | **Relations** | a **local** model's `belongsTo`/`hasMany` to a remote one, and server-side `with()`/`withCount()` |
@@ -171,6 +171,8 @@ Each of these throws **before any network call**, and the message names the alte
 | `whereMonth`, `whereDay`, `whereTime` | Only `whereDate`/`whereYear` translate. | `whereBetween` on the timestamp |
 | `inRandomOrder`, `groupBy`, `having`, `join` | Set operations belong to the owner of the data. | An aggregate, or an endpoint |
 | `whereHas()` against a **local** table | The two sides are in different databases. | `pluck()` the ids locally, then `whereIn()` |
+| `whereHas()` with `withTrashed()`/`onlyTrashed()`, or on a relation whose definition adds a `where()` | A has clause carries only the closure's field conditions. | Move the `where()` into the closure; for a trashed state, query the related resource and `whereIn()` its ids |
+| `count('column')` | SQL skips NULLs there, the API counts rows. | `->whereNotNull('column')->count()` |
 | `DB::transaction()` on this connection | There is no distributed transaction. | One idempotent call, or a domain action |
 | `Auth::attempt()` | The password hash is not a published field, and never will be. | The OAuth flow, and the `accounting` guard |
 
