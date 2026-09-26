@@ -143,7 +143,7 @@ Everything here works, and works the way it reads:
 | **Walk** | `chunkById`, `lazyById`, `eachById` — pages are capped at `limits.max_query_limit` |
 | **Write** | `create`, `save`, `update` on a model, `delete`, `destroy` |
 | **Soft delete** | `RemoteSoftDeletes`: `withTrashed`, `onlyTrashed`, `restore`, `forceDelete`, `trashed` |
-| **Relations** | a **local** model's `belongsTo`/`hasMany` to a remote one, and server-side `with()`/`withCount()` |
+| **Relations** | a **local** model's `belongsTo` to a remote one; its `hasMany` through a bounded query (see *Relations*); server-side `with()`/`withCount()` |
 | **Compose** | `when`, `tap`, scopes |
 | **Domain** | `remoteAction()`, `validateRemote()`, `remoteCan()` |
 
@@ -199,6 +199,13 @@ class Order extends Model                 // a LOCAL table
         return $this->belongsTo(User::class);   // one GET users/{id}, through the identity map
     }
 }
+```
+
+A local model's `hasMany` to a remote one cannot be eager-loaded — `with()` would be an unbounded `whereIn()`.
+Ask through the relation with a limit instead:
+
+```php
+$team->members()->limit(50)->get();
 ```
 
 **Remote → remote** is done by the server, through `include`:
