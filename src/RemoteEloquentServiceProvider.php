@@ -133,10 +133,13 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
     private function registerTokenProviders(): void
     {
         $this->app->singleton(AccessTokenProvider::class, function (Container $app): AccessTokenProvider {
+            $tokenUrl = $this->text($this->setting($app, 'auth.token_url'));
+            $this->assertSecureUrl($app, $tokenUrl, 'auth.token_url');
+
             return new AccessTokenManager(
                 $app->make(HttpFactory::class),
                 $this->cache($app),
-                $this->text($this->setting($app, 'auth.token_url')),
+                $tokenUrl,
                 $this->text($this->setting($app, 'auth.client_id')),
                 $this->text($this->setting($app, 'auth.client_secret')),
                 (string)($this->setting($app, 'auth.scope') ?? ''),
@@ -150,11 +153,14 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
         $this->app->alias(AccessTokenProvider::class, AccessTokenManager::class);
 
         $this->app->singleton(ActorTokenProvider::class, function (Container $app): ActorTokenProvider {
+            $exchangeUrl = $this->text($this->setting($app, 'actor.exchange_url'));
+            $this->assertSecureUrl($app, $exchangeUrl, 'actor.exchange_url');
+
             return new ActorTokenManager(
                 $app->make(HttpFactory::class),
                 $this->cache($app),
                 fn () => $this->bridge($app),
-                $this->text($this->setting($app, 'actor.exchange_url')),
+                $exchangeUrl,
                 $this->text($this->setting($app, 'auth.client_id')),
                 $this->text($this->setting($app, 'auth.client_secret')),
                 (string)($this->setting($app, 'actor.token_type') ?? 'Bearer'),
@@ -276,7 +282,6 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
         }
 
         $this->assertSecureUrl($app, $base, 'rest.base_url');
-        $this->assertSecureUrl($app, $this->text($this->setting($app, 'auth.token_url')), 'auth.token_url');
 
         $headers = $this->setting($app, 'rest.headers', []);
 
@@ -329,6 +334,9 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
             ));
         }
 
+        $jwksUrl = $this->text($config['jwks_url'] ?? null);
+        $this->assertSecureUrl($app, $jwksUrl, 'auth.guards.' . $name . '.jwks_url');
+
         $guard = new AccountingGuard(
             $name,
             $provider,
@@ -341,7 +349,7 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
             (string)($config['algorithm'] ?? self::DEFAULT_ALGORITHM),
             $this->text($this->bridgeSetting($app, 'public_key')),
             $this->text($this->bridgeSetting($app, 'public_key_path')),
-            $this->text($config['jwks_url'] ?? null),
+            $jwksUrl,
             (int)($config['jwks_ttl'] ?? 3600),
             $this->audiences($app, $config),
             $this->text($config['issuer'] ?? $this->bridgeSetting($app, 'expected_issuer')),
