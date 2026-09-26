@@ -281,17 +281,17 @@ final class ApiEloquentBuilder extends EloquentBuilder
         throw UnsupportedQueryException::chunking('lazy', ['resource' => $this->apiQuery()->resource()]);
     }
 
-    public function firstOrCreate(array $attributes = [], array $values = []): never
+    public function firstOrCreate(array $attributes = [], Closure|array $values = []): never
     {
         throw UnsupportedQueryException::atomicUpsert('firstOrCreate', ['resource' => $this->apiQuery()->resource()]);
     }
 
-    public function createOrFirst(array $attributes = [], array $values = []): never
+    public function createOrFirst(array $attributes = [], Closure|array $values = []): never
     {
         throw UnsupportedQueryException::atomicUpsert('createOrFirst', ['resource' => $this->apiQuery()->resource()]);
     }
 
-    public function updateOrCreate(array $attributes, array $values = []): never
+    public function updateOrCreate(array $attributes, Closure|array $values = []): never
     {
         throw UnsupportedQueryException::atomicUpsert('updateOrCreate', ['resource' => $this->apiQuery()->resource()]);
     }

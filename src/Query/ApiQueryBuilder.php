@@ -654,7 +654,7 @@ final class ApiQueryBuilder extends BaseQueryBuilder
      * @param  array<int, string>|string  $uniqueBy
      * @param  array<int, string>|null  $update
      */
-    public function upsert(array $values, array|string $uniqueBy, ?array $update = null): never
+    public function upsert(array $values, $uniqueBy, $update = null): never
     {
         throw UnsupportedQueryException::atomicUpsert('upsert', $this->context());
     }

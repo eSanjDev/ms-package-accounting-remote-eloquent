@@ -20,7 +20,7 @@ final class ApiConnection extends Connection
         );
     }
 
-    public function select($query, $bindings = [], $useReadPdo = true): never
+    public function select($query, $bindings = [], $useReadPdo = true, array $fetchUsing = []): never
     {
         throw self::refuse('select');
     }
@@ -30,7 +30,7 @@ final class ApiConnection extends Connection
         throw self::refuse('selectOne');
     }
 
-    public function selectResultSets($query, $bindings = [], $useReadPdo = true): never
+    public function selectResultSets($query, $bindings = [], $useReadPdo = true, array $fetchUsing = []): never
     {
         throw self::refuse('selectResultSets');
     }
@@ -45,7 +45,7 @@ final class ApiConnection extends Connection
         throw self::refuse('selectFromWriteConnection');
     }
 
-    public function cursor($query, $bindings = [], $useReadPdo = true): never
+    public function cursor($query, $bindings = [], $useReadPdo = true, array $fetchUsing = []): never
     {
         throw self::refuse('cursor');
     }
