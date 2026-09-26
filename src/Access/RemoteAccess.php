@@ -36,6 +36,10 @@ final class RemoteAccess
 
     private static ?RateLimitSnapshot $quota = null;
 
+    private static ?float $failedAt = null;
+
+    private const RETRY_AFTER_FAILURE_SECONDS = 10;
+
     /**
      * Whether a permission is published.
      */
@@ -127,6 +131,7 @@ final class RemoteAccess
         self::$rereadUsed = false;
         self::$faking = false;
         self::$quota = null;
+        self::$failedAt = null;
     }
 
     /**
@@ -149,6 +154,10 @@ final class RemoteAccess
         }
 
         if (self::$resolved) {
+            return self::$snapshot ?? AccessSnapshot::unknown();
+        }
+
+        if (self::$failedAt !== null && microtime(true) - self::$failedAt < self::RETRY_AFTER_FAILURE_SECONDS) {
             return self::$snapshot ?? AccessSnapshot::unknown();
         }
 
@@ -225,6 +234,7 @@ final class RemoteAccess
             $response = $transport->access();
         } catch (Throwable) {
             self::$resolved = false;
+            self::$failedAt = microtime(true);
 
             return self::$snapshot ?? AccessSnapshot::unknown();
         }
@@ -233,6 +243,7 @@ final class RemoteAccess
 
         if (! is_array($data) || $data === []) {
             self::$resolved = false;
+            self::$failedAt = microtime(true);
 
             return self::$snapshot ?? AccessSnapshot::unknown();
         }
@@ -261,6 +272,7 @@ final class RemoteAccess
         }
 
         self::$rereadUsed = false;
+        self::$failedAt = null;
 
         return self::$snapshot = AccessSnapshot::fromArray($data);
     }
