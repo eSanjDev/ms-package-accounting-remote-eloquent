@@ -281,6 +281,27 @@ final class ApiEloquentBuilder extends EloquentBuilder
         throw UnsupportedQueryException::chunking('lazy', ['resource' => $this->apiQuery()->resource()]);
     }
 
+    public function orderedChunkById($count, callable $callback, $column = null, $alias = null, $descending = false)
+    {
+        return parent::orderedChunkById($this->idPageSize($count), $callback, $column, $alias, $descending);
+    }
+
+    public function eachById(callable $callback, $count = 1000, $column = null, $alias = null)
+    {
+        // eachById() numbers items by this count, so it is clamped here too.
+        return parent::eachById($callback, $this->idPageSize($count), $column, $alias);
+    }
+
+    protected function orderedLazyById($chunkSize = 1000, $column = null, $alias = null, $descending = false)
+    {
+        return parent::orderedLazyById($this->idPageSize($chunkSize), $column, $alias, $descending);
+    }
+
+    private function idPageSize(mixed $size): int
+    {
+        return min((int)$size, $this->apiQuery()->maxLimit());
+    }
+
     public function firstOrCreate(array $attributes = [], Closure|array $values = []): never
     {
         throw UnsupportedQueryException::atomicUpsert('firstOrCreate', ['resource' => $this->apiQuery()->resource()]);
