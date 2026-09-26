@@ -699,6 +699,8 @@ is supported and optional; Passport issues tokens with no `kid`, so the pinned P
 | --- | --- |
 | Expired, wrong signature, wrong `aud`/`iss`/`azp`, missing scope, not a JWT, algorithm swap | warning logged, **guest** |
 | No public key and no JWKS, session mode with no auth-bridge, unreachable JWKS, `firebase/php-jwt` missing | `RemoteAuthenticationException` |
+| `users/me` answers 401 — the user's token was revoked, or they signed out elsewhere | warning logged, **guest**; the session token is dropped |
+| `users/me` answers 401 blaming this application's client (revoked or inactive) | `RemoteAuthenticationException` |
 | `users/me` answers 503 / 429 / 403 | the exception propagates |
 | `users/me` answers 404 for the subject | `null` |
 
