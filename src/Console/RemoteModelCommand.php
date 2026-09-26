@@ -28,7 +28,6 @@ final class RemoteModelCommand extends Command
         'bigint' => 'integer',
         'float' => 'float',
         'double' => 'float',
-        'decimal' => 'decimal:2',
         'datetime' => 'datetime',
         'timestamp' => 'datetime',
         'date' => 'date',
@@ -321,7 +320,7 @@ final class RemoteModelCommand extends Command
         $casts = [];
 
         foreach ($schema->fields() as $name => $field) {
-            $cast = self::CASTS[strtolower($field->type())] ?? null;
+            $cast = $this->castFor($field);
 
             if ($cast !== null) {
                 $casts[(string) $name] = $cast;
@@ -329,6 +328,17 @@ final class RemoteModelCommand extends Command
         }
 
         return $casts;
+    }
+
+    private function castFor(FieldDefinition $field): ?string
+    {
+        $type = strtolower($field->type());
+
+        if ($type === 'decimal') {
+            return $field->scale() === null ? 'string' : 'decimal:' . $field->scale();
+        }
+
+        return self::CASTS[$type] ?? null;
     }
 
     private function className(string $resource): string

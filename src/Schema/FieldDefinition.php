@@ -103,6 +103,13 @@ final class FieldDefinition
         return ($this->raw['distinct'] ?? false) === true;
     }
 
+    public function scale(): ?int
+    {
+        $scale = $this->raw['scale'] ?? null;
+
+        return is_int($scale) && $scale >= 0 ? $scale : null;
+    }
+
     public function allowsAggregate(string $function): bool
     {
         if ($this->aggregates === null) {
