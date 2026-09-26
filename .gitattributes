@@ -1,0 +1,10 @@
+# Keep dev-only files out of the Packagist dist archive
+/.gitattributes  export-ignore
+/.gitignore      export-ignore
+/audit-reports   export-ignore
+/tools           export-ignore
+/.release-audit  export-ignore
+/.claude         export-ignore
+/.codex          export-ignore
+/.idea           export-ignore
+AUDIT-*.html     export-ignore

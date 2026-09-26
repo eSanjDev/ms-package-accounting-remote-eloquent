@@ -1,0 +1,11 @@
+/vendor/
+composer.lock
+
+# IDE, tooling and audit output — never ship these
+.idea/
+.vscode/
+.claude/
+.codex/
+.release-audit/
+audit-reports/
+AUDIT-*.html
