@@ -311,50 +311,54 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
             return new RemoteUserProvider((string)($config['model'] ?? ApiUser::class));
         });
 
-        $auth->extend('accounting', function (Container $app, string $name, array $config) use ($auth): AccountingGuard {
-            $provider = $auth->createUserProvider($config['provider'] ?? null);
+        // A method, not a closure: Laravel 13 rebinds extend() closures to the AuthManager.
+        $auth->extend('accounting', $this->makeAccountingGuard(...));
+    }
 
-            if (!$provider instanceof RemoteUserProvider) {
-                throw new InvalidArgumentException(sprintf(
-                    'The "%s" guard needs a "remote" user provider, got %s. Set auth.guards.%s.provider to a provider with "driver" => "remote".',
-                    $name,
-                    $provider === null ? 'none' : $provider::class,
-                    $name,
-                ));
-            }
+    private function makeAccountingGuard(Container $app, string $name, array $config): AccountingGuard
+    {
+        $provider = $app->make('auth')->createUserProvider($config['provider'] ?? null);
 
-            $guard = new AccountingGuard(
+        if (!$provider instanceof RemoteUserProvider) {
+            throw new InvalidArgumentException(sprintf(
+                'The "%s" guard needs a "remote" user provider, got %s. Set auth.guards.%s.provider to a provider with "driver" => "remote".',
                 $name,
-                $provider,
-                $app->make(HttpFactory::class),
-                null,
-                $this->bridge($app),
-                $this->cache($app),
-                $this->logger($app),
-                (string)($config['input'] ?? 'session'),
-                (string)($config['algorithm'] ?? self::DEFAULT_ALGORITHM),
-                $this->text($this->bridgeSetting($app, 'public_key')),
-                $this->text($this->bridgeSetting($app, 'public_key_path')),
-                $this->text($config['jwks_url'] ?? null),
-                (int)($config['jwks_ttl'] ?? 3600),
-                $this->audiences($app, $config),
-                $this->text($config['issuer'] ?? $this->bridgeSetting($app, 'expected_issuer')),
-                $this->list($config['authorized_parties'] ?? []),
-                $this->list($config['scopes'] ?? []),
-                (int)($config['leeway'] ?? 30),
-                (int)($config['user_ttl'] ?? 0),
-                is_array($config['me'] ?? null) ? $config['me'] : [],
-                $this->cachePrefix($app),
-            );
+                $provider === null ? 'none' : $provider::class,
+                $name,
+            ));
+        }
 
-            $request = $app->refresh('request', $guard, 'setRequest');
+        $guard = new AccountingGuard(
+            $name,
+            $provider,
+            $app->make(HttpFactory::class),
+            null,
+            $this->bridge($app),
+            $this->cache($app),
+            $this->logger($app),
+            (string)($config['input'] ?? 'session'),
+            (string)($config['algorithm'] ?? self::DEFAULT_ALGORITHM),
+            $this->text($this->bridgeSetting($app, 'public_key')),
+            $this->text($this->bridgeSetting($app, 'public_key_path')),
+            $this->text($config['jwks_url'] ?? null),
+            (int)($config['jwks_ttl'] ?? 3600),
+            $this->audiences($app, $config),
+            $this->text($config['issuer'] ?? $this->bridgeSetting($app, 'expected_issuer')),
+            $this->list($config['authorized_parties'] ?? []),
+            $this->list($config['scopes'] ?? []),
+            (int)($config['leeway'] ?? 30),
+            (int)($config['user_ttl'] ?? 0),
+            is_array($config['me'] ?? null) ? $config['me'] : [],
+            $this->cachePrefix($app),
+        );
 
-            if ($request instanceof Request) {
-                $guard->setRequest($request);
-            }
+        $request = $app->refresh('request', $guard, 'setRequest');
 
-            return $guard;
-        });
+        if ($request instanceof Request) {
+            $guard->setRequest($request);
+        }
+
+        return $guard;
     }
 
     private function registerPresenceVerifier(): void
