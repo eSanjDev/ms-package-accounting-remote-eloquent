@@ -98,6 +98,11 @@ final class FieldDefinition
         return $this->sortable;
     }
 
+    public function isDistinctable(): bool
+    {
+        return ($this->raw['distinct'] ?? false) === true;
+    }
+
     public function allowsAggregate(string $function): bool
     {
         if ($this->aggregates === null) {

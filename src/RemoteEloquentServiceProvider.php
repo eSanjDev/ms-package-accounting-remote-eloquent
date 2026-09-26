@@ -400,6 +400,8 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
                     [self::CONNECTION],
                     (int)$this->setting($app, 'limits.max_query_limit', 100),
                     (int)$this->setting($app, 'limits.in_chunk', 500),
+                    // Request-scoped, so resolved per use.
+                    schemas: static fn (): SchemaRepository => $app->make(SchemaRepository::class),
                 );
             }
         );

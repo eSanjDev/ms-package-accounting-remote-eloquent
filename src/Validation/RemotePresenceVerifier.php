@@ -13,6 +13,7 @@ use Esanj\RemoteEloquent\Exceptions\UnsupportedValidationRuleException;
 use Esanj\RemoteEloquent\Models\ApiModel;
 use Esanj\RemoteEloquent\Query\ApiQueryBuilder;
 use Esanj\RemoteEloquent\Query\QuerySpec;
+use Esanj\RemoteEloquent\Schema\SchemaRepository;
 use Illuminate\Validation\DatabasePresenceVerifierInterface;
 use Illuminate\Validation\PresenceVerifierInterface;
 use Stringable;
@@ -44,6 +45,7 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
         private readonly int $maxLimit = 100,
         private readonly int $inChunk = 500,
         private readonly string $deletedAtColumn = 'deleted_at',
+        private readonly ?Closure $schemas = null,
     ) {
     }
 
@@ -91,7 +93,7 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
     }
 
     /**
-     * How many DISTINCT values among these exist — one query call.
+     * How many DISTINCT values among these exist.
      *
      * @param  string  $collection
      * @param  string  $column
@@ -113,32 +115,47 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
             return 0;
         }
 
-        $found = [];
+        $matched = 0;
 
         foreach (array_chunk($wanted, $this->pageSize()) as $chunk) {
-            $probe = $this->probe($collection);
-
-            // Not distinct: the server offers distinct on few fields, and $found dedupes anyway.
-            $probe->select($column)
-                ->whereIn($column, $chunk)
-                ->limit(count($chunk));
-
-            $this->applyConditions($probe, $extra, $collection);
-
-            foreach ($probe->get() as $row) {
-                $record = is_array($row) ? $row : (array) $row;
-                $value = $record[$field] ?? null;
-
-                // A null never matched a value in the list; SQL's count(column) would not have counted it either.
-                if ($value === null) {
-                    continue;
-                }
-
-                $found[$this->fingerprint($value)] = true;
-            }
+            $matched += $this->countPresent($collection, $column, $field, $chunk, $extra);
         }
 
-        return count($found);
+        return $matched;
+    }
+
+    private function countPresent(string $collection, string $column, string $field, array $values, array $extra): int
+    {
+        $probe = $this->probe($collection);
+        $probe->whereIn($column, $values);
+        $this->applyConditions($probe, $extra, $collection);
+
+        if ($field === $probe->keyName()) {
+            return $probe->count();
+        }
+
+        if ($this->isDistinctable($collection, $field)) {
+            return $probe->distinct()->count($column);
+        }
+
+        $present = 0;
+
+        foreach ($values as $value) {
+            $single = $this->probe($collection);
+            $single->where($column, '=', $value);
+            $this->applyConditions($single, $extra, $collection);
+            $present += $single->exists() ? 1 : 0;
+        }
+
+        return $present;
+    }
+
+    private function isDistinctable(string $collection, string $field): bool
+    {
+        $schemas = $this->schemas === null ? null : ($this->schemas)();
+
+        return $schemas instanceof SchemaRepository
+            && ($schemas->for($this->resourceFor($collection))?->field($field)?->isDistinctable() ?? false);
     }
 
     /**
