@@ -20,6 +20,9 @@ final class SchemaRepository
     /** @var array<string, ResourceSchema|null> */
     private array $resolved = [];
 
+    /** @var array<string, string> */
+    private array $observed = [];
+
     public function __construct(
         private readonly ResourceTransport $transport,
         private readonly CacheRepository $cache,
@@ -85,6 +88,28 @@ final class SchemaRepository
         ]);
 
         return $this->resolved[$resource] = $this->fallback($entry);
+    }
+
+    public function observe(string $resource, string $version): void
+    {
+        $resource = $this->normalizeName($resource);
+
+        if ($resource === '' || $version === '' || ($this->observed[$resource] ?? null) === $version) {
+            return;
+        }
+
+        $this->observed[$resource] = $version;
+
+        if (array_key_exists($resource, $this->resolved)) {
+            $known = $this->resolved[$resource];
+        } else {
+            $entry = $this->cached($resource);
+            $known = $entry === null ? null : $this->hydrate($entry['payload']);
+        }
+
+        if ($known !== null && $known->versionTag() !== '' && $known->versionTag() !== $version) {
+            $this->forget($resource);
+        }
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Esanj\RemoteEloquent\Client;
 
+use Closure;
 use Esanj\RemoteEloquent\Access\RemoteAccess;
 use Esanj\RemoteEloquent\Contracts\AccessTokenProvider;
 use Esanj\RemoteEloquent\Contracts\ActorTokenProvider;
@@ -20,6 +21,7 @@ use Esanj\RemoteEloquent\Exceptions\UnsupportedResourceException;
 use Esanj\RemoteEloquent\Exceptions\UserMergedException;
 use Esanj\RemoteEloquent\Idempotency\OperationContext;
 use Esanj\RemoteEloquent\Observability\RemoteCallCollector;
+use Esanj\RemoteEloquent\Schema\SchemaRepository;
 use Esanj\RemoteEloquent\Transport\RemoteResponse;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -87,6 +89,7 @@ final class ResourceClient
         private ?RemoteCallCollector $calls = null,
         private readonly ?LoggerInterface $logger = null,
         private readonly string $transport = 'rest',
+        private readonly ?Closure $schemas = null,
     ) {
     }
 
@@ -354,6 +357,7 @@ final class ResourceClient
             );
 
             RemoteAccess::observe($response->permissionsVersion(), $response->rateLimit());
+            $this->observeSchema($resource, $response->schemaVersion());
 
             if ($status < 300 || $status === 304) {
                 $this->warnIfDeprecated($response, $operation, $resource, $path);
@@ -622,6 +626,23 @@ final class ResourceClient
 
             default => TransportException::unexpectedStatus($status, $requestId, $context),
         };
+    }
+
+    private function observeSchema(string $resource, ?string $version): void
+    {
+        if ($this->schemas === null || $version === null || $version === '') {
+            return;
+        }
+
+        try {
+            $schemas = ($this->schemas)();
+        } catch (Throwable) {
+            return;
+        }
+
+        if ($schemas instanceof SchemaRepository) {
+            $schemas->observe($resource, $version);
+        }
     }
 
     /**

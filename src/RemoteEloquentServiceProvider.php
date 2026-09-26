@@ -297,6 +297,8 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
             'headers' => is_array($headers) ? $headers : [],
             'calls' => $app->make(RemoteCallCollector::class),
             'logger' => $this->logger($app),
+            // Request-scoped, so resolved per use.
+            'schemas' => static fn (): SchemaRepository => $app->make(SchemaRepository::class),
         ];
 
         return $class === self::REST_CLIENT
