@@ -728,6 +728,12 @@ final class AccountingGuard implements StatefulGuard
                 ->me($this->meOptions + ['token' => $this->resolveToken()]);
         } catch (ModelNotFoundException) {
             return $this->reject('the token\'s subject no longer exists');
+        } catch (RemoteAuthenticationException $exception) {
+            if (!$exception->isUserTokenRejection()) {
+                throw $exception;
+            }
+
+            return $this->forgetRejectedToken($exception);
         }
 
         $record = $response->record();
@@ -744,6 +750,22 @@ final class AccountingGuard implements StatefulGuard
         $this->cacheUser($record);
 
         return $this->provider->hydrate($record);
+    }
+
+    private function forgetRejectedToken(RemoteAuthenticationException $exception): null
+    {
+        $this->claims = null;
+        $this->claimsResolved = true;
+        $this->token = null;
+
+        if (strtolower($this->input) !== 'bearer') {
+            $this->bridge?->clearToken();
+        }
+
+        return $this->reject('the account service rejected the signed-in user\'s token', [
+            'reason' => $exception->context()['reason'] ?? null,
+            'request_id' => $exception->requestId(),
+        ]);
     }
 
     private function cachedUser(): ?Authenticatable

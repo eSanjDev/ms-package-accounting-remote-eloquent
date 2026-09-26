@@ -58,6 +58,8 @@ final class ResourceClient
      */
     private const FORCED_REFRESH_SECONDS = 30;
 
+    private const CLIENT_REJECTIONS = ['revoked_or_unknown_client', 'client_without_application', 'inactive_application'];
+
     private ?Authenticatable $actor = null;
 
     private ?string $requestId = null;
@@ -554,6 +556,7 @@ final class ResourceClient
         $requestId = $response->requestId();
         $message = is_string($error['message'] ?? null) ? $error['message'] : '';
         $field = is_string($error['field'] ?? null) ? $error['field'] : '';
+        $reason = is_string($error['reason'] ?? null) ? $error['reason'] : null;
         $context += ['status' => $status, 'error_code' => $code];
 
         if ($code === 'query_timeout') {
@@ -589,8 +592,11 @@ final class ResourceClient
             $status === 400 && $code === 'query_too_complex' => InvalidQueryException::tooComplex($resource, $requestId, $context),
             $status === 400 => InvalidQueryException::fromServer($code, $message, 400, $requestId, $context),
 
+            $status === 401 && $operation === 'me' && ! in_array($reason, self::CLIENT_REJECTIONS, true)
+                => RemoteAuthenticationException::userTokenRejected($reason, $requestId, $context),
+
             // Reached only after the refresh above has already been spent.
-            $status === 401 => RemoteAuthenticationException::tokenRejected($requestId, $context),
+            $status === 401 => RemoteAuthenticationException::tokenRejected($requestId, $context + ['reason' => $reason]),
 
             $status === 403 => $this->denied($code, $message, $error, $requestId, $context),
 

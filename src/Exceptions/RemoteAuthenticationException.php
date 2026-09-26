@@ -11,6 +11,37 @@ use Throwable;
  */
 final class RemoteAuthenticationException extends RemoteEloquentException
 {
+    private bool $userTokenRejected = false;
+
+    /**
+     * @param  array<string, scalar|null>  $context
+     */
+    public static function userTokenRejected(
+        ?string $reason = null,
+        ?string $requestId = null,
+        array $context = [],
+    ): self {
+        $exception = new self(
+            sprintf(
+                'The account service rejected the signed-in user\'s token%s: it was revoked, has expired, or the user signed out elsewhere. This application\'s own credentials are not involved.',
+                $reason === null ? '' : ' (' . $reason . ')'
+            ),
+            'unauthenticated',
+            401,
+            $requestId,
+            $context + ['reason' => $reason],
+        );
+
+        $exception->userTokenRejected = true;
+
+        return $exception;
+    }
+
+    public function isUserTokenRejection(): bool
+    {
+        return $this->userTokenRejected;
+    }
+
     /**
      * @param  array<string, scalar|null>  $context
      */
@@ -105,11 +136,13 @@ final class RemoteAuthenticationException extends RemoteEloquentException
 
     protected function responseStatus(): int
     {
-        return 500;
+        return $this->userTokenRejected ? 401 : 500;
     }
 
     protected function userMessage(): string
     {
-        return 'This service could not authenticate itself with the account service.';
+        return $this->userTokenRejected
+            ? 'Your session has ended. Please sign in again.'
+            : 'This service could not authenticate itself with the account service.';
     }
 }
