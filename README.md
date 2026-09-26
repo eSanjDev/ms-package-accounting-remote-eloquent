@@ -298,8 +298,9 @@ $user->remoteAction('sync-roles', ['roles' => ['editor']]);   // protected roles
 
 ## Validation
 
-`Rule::exists()` and `Rule::unique()` work against a remote resource, in **one** request each — the presence
-verifier posts an `aggregate` or a single `distinct` query, never one call per value:
+`Rule::exists()` and `Rule::unique()` work against a remote resource. One value is one `aggregate` request; a list
+is one count per page on the key or on a field the schema publishes as `distinct`, and one request per value on
+any other field:
 
 ```php
 $request->validate([

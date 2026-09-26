@@ -621,14 +621,13 @@ $request->validate([
 ]);
 ```
 
-Each is **one** request:
+What goes over the wire:
 
-- `unique` becomes a single `POST users/aggregate` with `{function: count, ...}`;
-- `exists` over a list becomes a single `POST users/query` with `distinct: true` and `fields: [column]`, because
-  Laravel compares the answer with `count(array_unique($values))` and needs the distinct matches to do it.
-
-It is never one call per value. Lists longer than one page are walked in pages, so the normal case is exactly one
-request.
+- `unique`, and `exists` on one value, become a single `POST users/aggregate` with `{function: count, ...}`;
+- `exists` over a list counts the distinct matches, because Laravel compares the answer with
+  `count(array_unique($values))`. On the key that is one `count` per page, on a field the schema publishes as
+  `distinct` one distinct `count` per page, and on any other field one limit-1 query per value, so that repeats of
+  one value cannot hide another.
 
 Use the **class-string** form. `'exists:users,id'` is indistinguishable from a local `users` table, so it goes to
 Laravel's own verifier and silently queries nothing. `remote:doctor` lists every string-form rule it finds.
