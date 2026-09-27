@@ -1012,7 +1012,7 @@ Each throws before any network call, naming the alternative.
 | `whereHas()` with `withTrashed()`/`onlyTrashed()`, or on a relation whose definition adds a `where()` | the `where()` in the closure; for trashed, the related ids through `whereIn()` |
 | `firstOrCreate()`, `createOrFirst()`, `updateOrCreate()`, `incrementOrCreate()`, `upsert()` | `first()` then `create()`, or a domain action |
 | `restoreOrCreate()`, `createOrRestore()` | the same |
-| builder `update()` / `delete()` / `forceDelete()` / `touch()` | load the page, write each model |
+| builder `update()` / `delete()` / `forceDelete()` / `restore()` / `touch()` | load the page, write each model |
 | `increment()`, `decrement()`, `incrementEach()`, `decrementEach()` | a domain action |
 | `whereColumn()` | compare in PHP, or ask for a computed field |
 | `whereRaw`, `selectRaw`, `orderByRaw`, `havingRaw`, `DB::raw`, `toSql()` | a published field |

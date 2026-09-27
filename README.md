@@ -163,7 +163,7 @@ Each of these throws **before any network call**, and the message names the alte
 | `cursorPaginate()` | Needs a keyset cursor the API does not expose. | `paginate()` or `simplePaginate()` |
 | `chunk()`, `lazy()`, `cursor()`, `each()` | Offset paging over a table that is being written to skips and repeats rows. | `chunkById()`, `lazyById()`, `eachById()` |
 | `firstOrCreate()`, `updateOrCreate()`, `upsert()` | There is no atomic upsert endpoint; a read-then-write would race. | `first()` then `create()`, or a domain action |
-| `User::where(...)->update([...])` / `->delete()` | A mass write by filter has no endpoint, and doing it row by row is not the same operation. | Load the page, then write each model |
+| `User::where(...)->update([...])` / `->delete()` / `->restore()` | A mass write by filter has no endpoint, and doing it row by row is not the same operation. | Load the page, then write each model |
 | `increment()`, `decrement()`, `touch()` | Not atomic across the network. | A domain action that owns the rule |
 | `whereColumn`, `whereRaw`, `selectRaw`, `orderByRaw`, `DB::raw` | Raw SQL is exactly what 2.0 removed. | A published field, or an action |
 | `whereExists`, subqueries | The server evaluates no client SQL. | `pluck()` the ids, then `whereIn()` |
