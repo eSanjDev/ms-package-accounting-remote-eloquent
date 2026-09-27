@@ -321,7 +321,9 @@ User::query()
 `'x%'`, `'%x%'`, `'%x'`. A wildcard anywhere else — `'a%b'` — has no operator and is refused rather than
 approximated. Nested closures go three levels deep; deeper is `query_too_complex`.
 
-`whereDate()` and `whereYear()` translate with `=`. `whereMonth()`, `whereDay()` and `whereTime()` do not — use
+`whereDate()` and `whereYear()` translate with `=`, as a half-open range of UTC calendar days: Accounting reads a
+date with no zone on a datetime field as UTC midnight, the zone every datetime it returns is in. `whereMonth()`,
+`whereDay()` and `whereTime()` do not — use
 `whereBetween()` on the timestamp.
 
 A `whereIn()` longer than one request may carry -- `min(in_chunk, 500)` -- is **split into several requests**
@@ -598,8 +600,9 @@ needs its own permission and signs the user out everywhere. `sync-roles` never g
 already holds in place. `users.update.all` lets `save()` reach users outside this application's members; without
 it only members can be edited.
 
-This is where the logic that used to be an `UPDATE` lives now. `is_active` is not writable — suspending an
-account emails the person, writes an audit row and ends their sessions, and none of that happens when a column
+This is where the logic that used to be an `UPDATE` lives now. `is_active` is not writable — `suspend` is local
+to your application: it revokes the person's tokens for your clients, refuses their next sign-in, token refresh,
+`users/me` and actor tokens for your application, and writes an audit row. None of that happens when a column
 changes. The action is the operation; the column is a consequence.
 
 `php artisan remote:schema users` lists the actions a resource publishes; an unknown one throws
@@ -665,7 +668,7 @@ then reads `GET users/me` with that token, once per request.
         'driver' => 'accounting',
         'provider' => 'remote-users',
         'input' => 'session',            // or 'bearer' for a token API
-        // 'audiences' => ['<client-id>'],   default: esanj.auth_bridge.expected_audiences, else the client id; required
+        // 'audiences' => ['<client-id>'],   default: esanj.auth_bridge.expected_audiences, else esanj.auth_bridge.client_id (session input) or auth.client_id; required
         // 'issuer' => 'https://auth.esanj.io',
         // 'authorized_parties' => [],
         // 'scopes' => ['users.read'],
@@ -731,10 +734,12 @@ automatically. An actor token is good for exactly one write, so it is exchanged 
 `GET users/me` (`ApiUser::me()` and the `accounting` guard) is different: it is answered with the user's **own**
 access token in `Authorization`, not with an actor token.
 
-In a job or a command, where there is no request, pin the actor:
+In a job or a command there is no session to read the user's token from, so pin the actor together with the
+access token the job was dispatched with (`AuthBridge::getValidAccessToken()` in the request that queues it). It is
+exchanged when the job writes, so the job has to run within that token's 15-minute lifetime:
 
 ```php
-User::actingAsRemote($user);
+User::actingAsRemote($user, $this->accessToken);
 try {
     $user->remoteAction('suspend');
 } finally {
@@ -745,8 +750,10 @@ try {
 Refusals, in order:
 
 - no user → no actor header;
-- no `exchange_url` → no actor header (the documented opt-out); a write the server marks actor-required comes
-  back as `403 actor_denied` rather than being performed anonymously;
+- no `exchange_url` → no actor header (the documented opt-out). Accounting requires an actor for every write by
+  default (`REMOTE_REQUIRE_ACTOR_FOR_WRITES=true`), so writes come back as `403 actor_denied` unless the
+  application's actorless-writes switch is on and its IP is allow-listed; change-password, change-email and force
+  delete need an actor even then;
 - a user **with** `exchange_url` set and no token available → `RemoteAuthenticationException`, so a write that
   speaks for a person is never quietly sent as the application;
 - the subject token's `sub` not matching the actor → refused. That claim is only ever used to refuse, never to
@@ -1044,8 +1051,8 @@ it takes; `is_active` commonly allows only `eq`.
 **`403 permission_denied`** — `remote:access` shows what this application holds. `requiredPermission()` on the
 exception names what was missing.
 
-**`403 actor_denied`** — the write needs the end user's identity. Set `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL`, or
-pin the actor with `actingAsRemote()`.
+**`403 actor_denied`** — the write needs the end user's identity. Set `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL`; in a
+job, pin the actor and its token with `actingAsRemote($user, $token)`.
 
 **`409 idempotency_in_progress`** — the same operation is still running. Retry later with the same key; do not
 mint a new one.
@@ -1088,7 +1095,7 @@ Rule::unique(User::class, 'email')->ignore($user);
 $user->validateRemote();
 
 // auth
-auth()->user();  User::actingAsRemote($user);  User::forgetRemoteActor();
+auth()->user();  User::actingAsRemote($user, $token);  User::forgetRemoteActor();
 
 // access
 RemoteAccess::allows('users', 'update');  RemoteAccess::quota();

@@ -44,7 +44,7 @@ interface ResourceTransport
     /**
      * A copy of this transport bound to the end user a write originated from.
      */
-    public function withActor(?Authenticatable $actor): static;
+    public function withActor(?Authenticatable $actor, #[\SensitiveParameter] ?string $subjectToken = null): static;
 
     /**
      * GET {resource}/schema

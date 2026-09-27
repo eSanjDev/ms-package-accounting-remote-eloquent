@@ -52,6 +52,8 @@ abstract class ApiModel extends Model
 
     private static bool $actorIsPinned = false;
 
+    private static ?string $pinnedSubjectToken = null;
+
     public function __construct(array $attributes = [])
     {
         parent::__construct($attributes);
@@ -143,7 +145,7 @@ abstract class ApiModel extends Model
         }
 
         $response = $this->remoteWrite('create', $resource, null, fn (string $key): RemoteResponse => static::remoteTransport()
-            ->withActor($this->remoteActor())
+            ->withActor($this->remoteActor(), $this->remoteSubjectToken())
             ->create($resource, $payload, $key));
 
         $this->exists = true;
@@ -182,7 +184,7 @@ abstract class ApiModel extends Model
         }
 
         $response = $this->remoteWrite('update', $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
-            ->withActor($this->remoteActor())
+            ->withActor($this->remoteActor(), $this->remoteSubjectToken())
             ->update($resource, $id, $payload, $key));
 
         $this->syncChanges();
@@ -208,7 +210,7 @@ abstract class ApiModel extends Model
         $operation = $force ? 'force_delete' : 'delete';
 
         $this->remoteWrite($operation, $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
-            ->withActor($this->remoteActor())
+            ->withActor($this->remoteActor(), $this->remoteSubjectToken())
             ->delete($resource, $id, $force, $key));
 
         static::remoteIdentityMap()?->forget($resource, $id);
@@ -255,7 +257,7 @@ abstract class ApiModel extends Model
         $id = $this->remoteKey();
 
         $response = $this->remoteWrite('action:' . $action, $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
-            ->withActor($this->remoteActor())
+            ->withActor($this->remoteActor(), $this->remoteSubjectToken())
             ->action($resource, $id, $action, $payload, $key));
 
         if ($response->record() !== null) {
@@ -318,16 +320,23 @@ abstract class ApiModel extends Model
         self::$sharedIdentityMap?->flush();
     }
 
-    public static function actingAsRemote(?Authenticatable $actor): void
+    public static function actingAsRemote(?Authenticatable $actor, #[\SensitiveParameter] ?string $subjectToken = null): void
     {
         self::$pinnedActor = $actor;
+        self::$pinnedSubjectToken = $subjectToken === null || trim($subjectToken) === '' ? null : trim($subjectToken);
         self::$actorIsPinned = true;
     }
 
     public static function forgetRemoteActor(): void
     {
         self::$pinnedActor = null;
+        self::$pinnedSubjectToken = null;
         self::$actorIsPinned = false;
+    }
+
+    protected function remoteSubjectToken(): ?string
+    {
+        return self::$actorIsPinned ? self::$pinnedSubjectToken : null;
     }
 
     protected function remoteActor(): ?Authenticatable
@@ -534,7 +543,7 @@ abstract class ApiModel extends Model
         }
 
         static::remoteTransport()
-            ->withActor($this->remoteActor())
+            ->withActor($this->remoteActor(), $this->remoteSubjectToken())
             ->validate($this->resource(), $payload);
 
         return true;

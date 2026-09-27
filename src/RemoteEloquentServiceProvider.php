@@ -158,7 +158,6 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
 
             return new ActorTokenManager(
                 $app->make(HttpFactory::class),
-                $this->cache($app),
                 fn () => $this->bridge($app),
                 $exchangeUrl,
                 $this->text($this->setting($app, 'auth.client_id')),
@@ -589,7 +588,9 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
             return $audiences;
         }
 
-        $clientId = $this->text($this->setting($app, 'auth.client_id'));
+        $clientId = (string)($config['input'] ?? 'session') === 'session'
+            ? $this->text($this->bridgeSetting($app, 'client_id')) ?? $this->text($this->setting($app, 'auth.client_id'))
+            : $this->text($this->setting($app, 'auth.client_id'));
 
         return $clientId === null ? [] : [$clientId];
     }

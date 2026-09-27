@@ -108,7 +108,7 @@ final class FakeResourceTransport implements ResourceTransport
         return 'fake';
     }
 
-    public function withActor(?Authenticatable $actor): static
+    public function withActor(?Authenticatable $actor, #[\SensitiveParameter] ?string $subjectToken = null): static
     {
         $clone = clone $this;
 

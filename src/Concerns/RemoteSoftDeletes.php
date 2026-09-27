@@ -169,7 +169,7 @@ trait RemoteSoftDeletes
         }
 
         $response = $this->remoteWrite('restore', $resource, $id, fn (string $key): RemoteResponse => static::remoteTransport()
-            ->withActor($this->remoteActor())
+            ->withActor($this->remoteActor(), $this->remoteSubjectToken())
             ->restore($resource, $id, $payload, $key));
 
         $this->exists = true;

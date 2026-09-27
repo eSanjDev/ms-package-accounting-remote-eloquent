@@ -9,7 +9,6 @@ use Esanj\AuthBridge\Contracts\AuthBridgeServiceInterface;
 use Esanj\RemoteEloquent\Contracts\ActorTokenProvider;
 use Esanj\RemoteEloquent\Exceptions\RemoteAuthenticationException;
 use Illuminate\Contracts\Auth\Authenticatable;
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use SensitiveParameter;
 use Throwable;
@@ -31,7 +30,6 @@ final class ActorTokenManager implements ActorTokenProvider
 
     public function __construct(
         private readonly HttpFactory                 $http,
-        private readonly ?CacheRepository            $cache = null,
         private readonly AuthBridgeServiceInterface|Closure|null $bridge = null,
         private readonly ?string                     $exchangeUrl = null,
         private readonly ?string                     $clientId = null,
@@ -115,7 +113,6 @@ final class ActorTokenManager implements ActorTokenProvider
     {
         $copy = new self(
             $this->http,
-            $this->cache,
             $this->bridge,
             $this->exchangeUrl,
             $this->clientId,
@@ -154,7 +151,6 @@ final class ActorTokenManager implements ActorTokenProvider
         $key = $this->cacheKey($subject, (string)$identifier);
 
         unset($this->memo[$key]);
-        $this->cache?->forget($key);
     }
 
     /**
@@ -171,8 +167,9 @@ final class ActorTokenManager implements ActorTokenProvider
         if ($token === '') {
             throw RemoteAuthenticationException::actorExchangeFailed(
                 'there is no signed-in user token to exchange. A write that speaks for a person has to carry that '
-                . 'person: run it inside the request that signed them in, or pass the actor token the job was '
-                . 'dispatched with to withSubjectToken(). Leave the actor unset to write as the application alone.',
+                . 'person: run it inside the request that signed them in, or pin the user and the access token the '
+                . 'job was dispatched with: actingAsRemote($user, $token). Leave the actor unset to write as the '
+                . 'application alone.',
                 ['exchange_url' => $this->exchangeUrl],
             );
         }
@@ -224,7 +221,7 @@ final class ActorTokenManager implements ActorTokenProvider
     private function cachedToken(string $cacheKey): ?string
     {
         $now = time();
-        $entry = $this->memo[$cacheKey] ?? $this->cache?->get($cacheKey);
+        $entry = $this->memo[$cacheKey] ?? null;
 
         if (!is_array($entry)) {
             return null;
@@ -325,7 +322,6 @@ final class ActorTokenManager implements ActorTokenProvider
         $entry = ['token' => $token, 'expires_at' => $now + $usable];
 
         $this->memo[$cacheKey] = $entry;
-        $this->cache?->put($cacheKey, $entry, $usable);
     }
 
     private function cacheKey(#[SensitiveParameter] string $subject, string $identifier): string

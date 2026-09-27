@@ -26,10 +26,10 @@ final class RestResourceTransport implements ResourceTransport
         return 'rest';
     }
 
-    public function withActor(?Authenticatable $actor): static
+    public function withActor(?Authenticatable $actor, #[\SensitiveParameter] ?string $subjectToken = null): static
     {
         $copy = clone $this;
-        $copy->client = $this->client->withActor($actor);
+        $copy->client = $this->client->withActor($actor, $subjectToken);
 
         return $copy;
     }

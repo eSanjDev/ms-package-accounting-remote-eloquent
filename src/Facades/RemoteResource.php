@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Facade;
  * The resource API itself, for the handful of calls a model cannot express.
  *
  * @method static string name()
- * @method static \Esanj\RemoteEloquent\Contracts\ResourceTransport withActor(?\Illuminate\Contracts\Auth\Authenticatable $actor)
+ * @method static \Esanj\RemoteEloquent\Contracts\ResourceTransport withActor(?\Illuminate\Contracts\Auth\Authenticatable $actor, ?string $subjectToken = null)
  * @method static \Esanj\RemoteEloquent\Transport\RemoteResponse schema(string $resource)
  * @method static \Esanj\RemoteEloquent\Transport\RemoteResponse query(string $resource, array $spec)
  * @method static \Esanj\RemoteEloquent\Transport\RemoteResponse aggregate(string $resource, array $spec)

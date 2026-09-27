@@ -27,9 +27,9 @@ final class ResourceEndpoint
     /**
      * A copy whose writes travel with this end user's token.
      */
-    public function withActor(?Authenticatable $actor): self
+    public function withActor(?Authenticatable $actor, #[\SensitiveParameter] ?string $subjectToken = null): self
     {
-        return new self($this->client->withActor($actor), $this->resource);
+        return new self($this->client->withActor($actor, $subjectToken), $this->resource);
     }
 
     /**

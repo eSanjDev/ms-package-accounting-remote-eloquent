@@ -79,7 +79,7 @@ final class ResourceClient
     public function __construct(
         private readonly HttpFactory $http,
         private readonly AccessTokenProvider $accessTokens,
-        private readonly ActorTokenProvider $actorTokens,
+        private ActorTokenProvider $actorTokens,
         private readonly string $baseUrl,
         private readonly string $prefix = '/api/remote/v1',
         private readonly float $timeout = 5.0,
@@ -139,10 +139,14 @@ final class ResourceClient
     /**
      * A copy bound to the end user a write originated from.
      */
-    public function withActor(?Authenticatable $actor): self
+    public function withActor(?Authenticatable $actor, #[\SensitiveParameter] ?string $subjectToken = null): self
     {
         $copy = clone $this;
         $copy->actor = $actor;
+
+        if ($subjectToken !== null && method_exists($this->actorTokens, 'withSubjectToken')) {
+            $copy->actorTokens = $this->actorTokens->withSubjectToken($subjectToken);
+        }
 
         return $copy;
     }

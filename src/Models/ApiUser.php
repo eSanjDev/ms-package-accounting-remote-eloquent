@@ -35,7 +35,7 @@ class ApiUser extends ApiModel implements AuthenticatableContract, AuthorizableC
         $model = new static;
 
         $response = static::remoteTransport()
-            ->withActor($model->remoteActor())
+            ->withActor($model->remoteActor(), $model->remoteSubjectToken())
             ->me($options);
 
         $record = $response->record();

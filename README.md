@@ -360,7 +360,7 @@ Two behaviours worth knowing:
 
 - A **bad token** — expired, wrong signature, wrong audience, missing scope — logs a warning and answers *guest*.
 - A **configuration fault** that makes the check impossible — no public key, unreachable JWKS, no audience to
-  compare against (no `auth.client_id` and no `audiences`) — throws
+  compare against (no `audiences`, no auth-bridge `client_id` for session input, no `auth.client_id`) — throws
   `RemoteAuthenticationException`. Answering "guest" when the question could not be asked would log the whole
   application out and read as a login bug.
 
@@ -372,16 +372,20 @@ token belongs to.
 A write that originated in a person's request should travel with that person's identity, so Accounting can apply
 their permissions on top of the application's. Set `REMOTE_ELOQUENT_ACTOR_EXCHANGE_URL` and it happens by itself:
 the user signed in on the default guard is exchanged for a one-write actor token on every write and on
-`validateRemote()`. In a job that has no request, pin the actor:
+`validateRemote()`. A job has no session, so pin the actor together with the access token it was dispatched with
+(`AuthBridge::getValidAccessToken()` in the request that queues it). The token is exchanged when the job writes, so
+the job has to run within the token's 15-minute lifetime:
 
 ```php
-User::actingAsRemote($user);
+User::actingAsRemote($user, $this->accessToken);
 // ...
 User::forgetRemoteActor();
 ```
 
-With no exchange URL configured, writes travel as the application alone and anything the server marks
-actor-required comes back as `403 actor_denied` — never performed anonymously.
+With no exchange URL configured, writes travel as the application alone. Accounting requires an actor for every
+write by default (`REMOTE_REQUIRE_ACTOR_FOR_WRITES=true` on the server), so they come back as `403 actor_denied`
+unless the application's actorless-writes switch is on and its IP is allow-listed; change-password, change-email
+and force delete need an actor even then. Nothing is ever performed anonymously.
 
 ---
 
