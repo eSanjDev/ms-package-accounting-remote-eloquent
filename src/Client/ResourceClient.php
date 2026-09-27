@@ -460,15 +460,7 @@ final class ResourceClient
 
     private function request(): PendingRequest
     {
-        // Laravel 11 added createPendingRequest(); __call() reaches the same object on every supported version.
-        if (method_exists($this->http, 'createPendingRequest')) {
-            return $this->http->createPendingRequest();
-        }
-
-        /** @var PendingRequest $pending */
-        $pending = $this->http->withOptions([]);
-
-        return $pending;
+        return $this->http->createPendingRequest();
     }
 
     /**
