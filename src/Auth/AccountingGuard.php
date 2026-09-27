@@ -65,7 +65,7 @@ final class AccountingGuard implements StatefulGuard
     /**
      * @param string $name the guard name, as config/auth.php calls it
      * @param string $input 'session' (auth-bridge) or 'bearer' (Authorization header)
-     * @param list<string> $audiences accepted "aud" values; [] skips the check
+     * @param list<string> $audiences accepted "aud" values; a token is refused while this is empty
      * @param list<string> $authorizedParties accepted "azp"/"client_id"; [] skips the check
      * @param list<string> $requiredScopes scopes the token must carry; [] skips the check
      * @param array<string, mixed> $meOptions fields/include for users/me
@@ -463,7 +463,22 @@ final class AccountingGuard implements StatefulGuard
 
     private function claimsAreAcceptable(array $claims): bool
     {
-        if ($this->audiences !== [] && !$this->claimMatches($claims['aud'] ?? null, $this->audiences)) {
+        if ($this->audiences === []) {
+            throw new RemoteAuthenticationException(
+                sprintf(
+                    'The "%s" guard has no audience to check tokens against, so it would accept a token issued to any '
+                    . 'client. Set esanj.remote_eloquent.auth.client_id, esanj.auth_bridge.expected_audiences or the '
+                    . 'guard\'s "audiences".',
+                    $this->name,
+                ),
+                'unauthenticated',
+                0,
+                null,
+                ['guard' => $this->name],
+            );
+        }
+
+        if (!$this->claimMatches($claims['aud'] ?? null, $this->audiences)) {
             $this->reject('the token was issued for another audience', ['expected' => $this->audiences]);
 
             return false;
