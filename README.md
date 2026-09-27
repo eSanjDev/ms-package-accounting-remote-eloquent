@@ -486,7 +486,9 @@ that needed case folding fails loudly here instead of passing on MySQL and faili
 
 ## Upgrading to 2.0.2
 
-- **Laravel 11, 13 and the latest 12.x load**: 2.0.1 stopped with a fatal signature error on the first remote query.
+- **Laravel 12 or 13 is required.** 11 is past its security support, and Composer 2.9+ refuses to install any of
+  its releases.
+- **Laravel 13 and the latest 12.x load**: 2.0.1 stopped with a fatal signature error on the first remote query.
 - **A revoked sign-in token makes the user a guest** (with a logged warning) instead of a 500.
 - **A job run with `dispatchSync()` keeps its caller's actor and Idempotency-Keys**, so a retried outer job no
   longer re-applies the writes it made after the inner one.

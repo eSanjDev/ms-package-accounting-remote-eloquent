@@ -80,7 +80,7 @@ path left that can run a compiled string.
 ## 2. Requirements
 
 - PHP 8.2+
-- Laravel 11, 12 or 13
+- Laravel 12 or 13
 - Credentials for the Accounting service (an OAuth client id and secret)
 - `firebase/php-jwt` ^7.0 **only if** you use the `accounting` auth guard
 - `esanj/auth-bridge` if the signed-in user's own token should travel with writes
