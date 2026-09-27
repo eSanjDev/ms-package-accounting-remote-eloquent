@@ -485,6 +485,19 @@ that needed case folding fails loudly here instead of passing on MySQL and faili
 
 ---
 
+## Upgrading to 2.0.3
+
+- **The `accounting` guard refuses to run without an audience.** With neither `auth.client_id` nor `audiences` set it
+  used to accept a token issued to any client; it now throws `RemoteAuthenticationException`.
+- **Logging out of a `bearer` guard no longer revokes the session's own token.**
+- **`remoteCan()` follows `X-Permissions-Version`**, like `RemoteAccess`; it used to keep the first answer for the
+  life of the worker.
+- **`exists` over more than 25 values of a field without `distinct` throws** instead of sending one request per
+  value; limit the list with `max:25`.
+- **The presence verifier resolves the transport per use**, so a `fake()` installed after the validator was built is
+  honoured, and a long-lived worker no longer reuses the first request's transport.
+- **A builder `restore()` throws `UnsupportedQueryException`** with guidance instead of a `BadMethodCallException`.
+
 ## Upgrading to 2.0.2
 
 - **Laravel 12 or 13 is required.** 11 is past its security support, and Composer 2.9+ refuses to install any of
