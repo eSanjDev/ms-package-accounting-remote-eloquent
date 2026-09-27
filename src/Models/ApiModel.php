@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Esanj\RemoteEloquent\Models;
 
 use Esanj\RemoteEloquent\Cache\IdentityMap;
+use Esanj\RemoteEloquent\Access\RemoteAccess;
 use Esanj\RemoteEloquent\Contracts\ResourceTransport;
 use Esanj\RemoteEloquent\Database\ApiConnection;
 use Esanj\RemoteEloquent\Exceptions\UnboundedQueryException;
@@ -50,10 +51,6 @@ abstract class ApiModel extends Model
     private static ?Authenticatable $pinnedActor = null;
 
     private static bool $actorIsPinned = false;
-
-    private static ?array $accessPayload = null;
-
-    private static bool $accessResolved = false;
 
     public function __construct(array $attributes = [])
     {
@@ -290,54 +287,18 @@ abstract class ApiModel extends Model
 
     public function remoteCan(string $operation): bool
     {
-        $access = static::remoteAccess();
-
-        if ($access === null) {
-            return true;
-        }
-
-        $resource = $this->resource();
-        $resources = $access['resources'] ?? null;
-
-        if (is_array($resources) && array_key_exists($resource, $resources)) {
-            $entry = $resources[$resource];
-            $operations = is_array($entry) ? ($entry['operations'] ?? $entry) : null;
-
-            if (is_array($operations)) {
-                return in_array($operation, self::asStrings($operations), true);
-            }
-        }
-
-        $permissions = $access['permissions'] ?? null;
-
-        if (is_array($permissions)) {
-            return in_array($resource . '.' . $operation, self::asStrings($permissions), true);
-        }
-
-        return true;
+        return RemoteAccess::allows($this->resource(), $operation);
     }
 
     public static function remoteAccess(bool $fresh = false): ?array
     {
         if ($fresh) {
-            self::$accessResolved = false;
-            self::$accessPayload = null;
+            RemoteAccess::refresh();
         }
 
-        if (self::$accessResolved) {
-            return self::$accessPayload;
-        }
+        $snapshot = RemoteAccess::snapshot();
 
-        try {
-            $data = static::remoteTransport()->access()->data();
-        } catch (Throwable) {
-            // Not remembered: an outage must not freeze "unknown, so allowed" for the life of the worker.
-            return null;
-        }
-
-        self::$accessResolved = true;
-
-        return self::$accessPayload = is_array($data) ? $data : null;
+        return $snapshot->isKnown() ? $snapshot->toArray() : null;
     }
 
     public static function fake(array $rows = []): ResourceTransport
@@ -355,8 +316,6 @@ abstract class ApiModel extends Model
         Container::getInstance()->forgetInstance(ResourceTransport::class);
 
         self::$sharedIdentityMap?->flush();
-        self::$accessResolved = false;
-        self::$accessPayload = null;
     }
 
     public static function actingAsRemote(?Authenticatable $actor): void
@@ -563,19 +522,6 @@ abstract class ApiModel extends Model
         return $response;
     }
 
-    private static function asStrings(array $values): array
-    {
-        $strings = [];
-
-        foreach ($values as $value) {
-            if (is_scalar($value)) {
-                $strings[] = (string) $value;
-            }
-        }
-
-        return $strings;
-    }
-
     protected function sendValidate(string $mode, array $attributes, string|int|null $id): bool
     {
         $payload = [
@@ -619,8 +565,6 @@ abstract class ApiModel extends Model
         Container::getInstance()->instance(ResourceTransport::class, $transport);
 
         self::$sharedIdentityMap?->flush();
-        self::$accessResolved = false;
-        self::$accessPayload = null;
 
         return $transport;
     }
