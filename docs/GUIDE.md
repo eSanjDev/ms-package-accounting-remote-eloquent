@@ -627,7 +627,8 @@ What goes over the wire:
 - `exists` over a list counts the distinct matches, because Laravel compares the answer with
   `count(array_unique($values))`. On the key that is one `count` per page, on a field the schema publishes as
   `distinct` one distinct `count` per page, and on any other field one limit-1 query per value, so that repeats of
-  one value cannot hide another.
+  one value cannot hide another. That last case is capped at 25 values: a longer list throws
+  `UnsupportedValidationRuleException` before any request, so give the rule a `max:25`.
 
 Use the **class-string** form. `'exists:users,id'` is indistinguishable from a local `users` table, so it goes to
 Laravel's own verifier and silently queries nothing. `remote:doctor` lists every string-form rule it finds.

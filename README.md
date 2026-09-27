@@ -300,7 +300,7 @@ $user->remoteAction('sync-roles', ['roles' => ['editor']]);   // protected roles
 
 `Rule::exists()` and `Rule::unique()` work against a remote resource. One value is one `aggregate` request; a list
 is one count per page on the key or on a field the schema publishes as `distinct`, and one request per value on
-any other field:
+any other field — up to 25 values; a longer list there throws, so give such a rule a `max:25`:
 
 ```php
 $request->validate([
