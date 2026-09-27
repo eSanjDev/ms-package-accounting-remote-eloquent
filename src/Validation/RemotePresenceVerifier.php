@@ -31,7 +31,7 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
     private ?ApiConnection $api = null;
 
     /**
-     * @param  ResourceTransport  $transport  the transport every probe sends on
+     * @param  ResourceTransport|Closure  $transport  the transport every probe sends on, or a resolver for it
      * @param  PresenceVerifierInterface  $local  Laravel's own verifier, for every local table
      * @param  list<string>  $connections  connection names that mean "this is a remote resource"
      * @param  int  $maxLimit  config('esanj.remote_eloquent.limits.max_query_limit')
@@ -39,7 +39,7 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
      * @param  string  $deletedAtColumn  the column withoutTrashed() nulls, translated into a trashed mode
      */
     public function __construct(
-        private readonly ResourceTransport $transport,
+        private readonly ResourceTransport|Closure $transport,
         private readonly PresenceVerifierInterface $local,
         private readonly array $connections = ['remote-eloquent'],
         private readonly int $maxLimit = 100,
@@ -150,6 +150,11 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
         return $present;
     }
 
+    private function transport(): ResourceTransport
+    {
+        return $this->transport instanceof Closure ? ($this->transport)() : $this->transport;
+    }
+
     private function isDistinctable(string $collection, string $field): bool
     {
         $schemas = $this->schemas === null ? null : ($this->schemas)();
@@ -179,7 +184,7 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
 
         return new ApiQueryBuilder(
             $this->api ??= new ApiConnection(),
-            $this->transport,
+            $this->transport(),
             $resource,
             $resource,
             'id',
@@ -221,7 +226,7 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
                     $collection,
                     (string) $key,
                     'a condition arrived without a column name',
-                    ['transport' => $this->transport->name()],
+                    ['transport' => $this->transport()->name()],
                 );
             }
 
@@ -267,7 +272,7 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
                 $collection,
                 $column,
                 sprintf('a %s was given where the API takes a single value', get_debug_type($value)),
-                ['transport' => $this->transport->name()],
+                ['transport' => $this->transport()->name()],
             );
         }
 
@@ -295,7 +300,7 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
             throw UnsupportedValidationRuleException::queryCallback(
                 $collection,
                 $exception->getMessage(),
-                ['transport' => $this->transport->name()],
+                ['transport' => $this->transport()->name()],
                 $exception,
             );
         }

@@ -385,24 +385,13 @@ final class RemoteEloquentServiceProvider extends ServiceProvider
                     return $local;
                 }
 
-                try {
-                    $transport = $app->make(ResourceTransport::class);
-                } catch (Throwable $exception) {
-                    $this->logger($app)?->warning(
-                        'Remote Eloquent could not install its presence verifier; Rule::exists() and Rule::unique() on a remote model will fail.',
-                        ['exception' => $exception->getMessage()],
-                    );
-
-                    return $local;
-                }
-
+                // The transport and the schemas are request-scoped, so both are resolved per use.
                 return new RemotePresenceVerifier(
-                    $transport,
+                    static fn (): ResourceTransport => $app->make(ResourceTransport::class),
                     $local,
                     [self::CONNECTION],
                     (int)$this->setting($app, 'limits.max_query_limit', 100),
                     (int)$this->setting($app, 'limits.in_chunk', 500),
-                    // Request-scoped, so resolved per use.
                     schemas: static fn (): SchemaRepository => $app->make(SchemaRepository::class),
                 );
             }
