@@ -341,6 +341,15 @@ final class ApiEloquentBuilder extends EloquentBuilder
         throw UnsupportedQueryException::massDelete(['resource' => $this->apiQuery()->resource()]);
     }
 
+    public function restore(): never
+    {
+        throw UnsupportedQueryException::method(
+            'restore() on a query',
+            'The resource API restores one record at a time. Load them — withTrashed()->whereIn(...)->get() — and call restore() on each.',
+            ['resource' => $this->apiQuery()->resource()],
+        );
+    }
+
     public function forceDelete(): never
     {
         throw UnsupportedQueryException::massDelete([
