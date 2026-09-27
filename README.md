@@ -359,7 +359,8 @@ the same as always.
 Two behaviours worth knowing:
 
 - A **bad token** — expired, wrong signature, wrong audience, missing scope — logs a warning and answers *guest*.
-- A **configuration fault** that makes the check impossible — no public key, unreachable JWKS — throws
+- A **configuration fault** that makes the check impossible — no public key, unreachable JWKS, no audience to
+  compare against (no `auth.client_id` and no `audiences`) — throws
   `RemoteAuthenticationException`. Answering "guest" when the question could not be asked would log the whole
   application out and read as a login bug.
 

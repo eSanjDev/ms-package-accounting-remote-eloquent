@@ -664,7 +664,7 @@ then reads `GET users/me` with that token, once per request.
         'driver' => 'accounting',
         'provider' => 'remote-users',
         'input' => 'session',            // or 'bearer' for a token API
-        // 'audiences' => ['<client-id>'],   default: esanj.auth_bridge.expected_audiences, else the client id
+        // 'audiences' => ['<client-id>'],   default: esanj.auth_bridge.expected_audiences, else the client id; required
         // 'issuer' => 'https://auth.esanj.io',
         // 'authorized_parties' => [],
         // 'scopes' => ['users.read'],
