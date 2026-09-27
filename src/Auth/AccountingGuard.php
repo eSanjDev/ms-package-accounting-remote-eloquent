@@ -250,7 +250,10 @@ final class AccountingGuard implements StatefulGuard
         }
 
         try {
-            $this->bridge?->revokeToken();
+            // A bearer token belongs to the caller; the session's own token is not this guard's to revoke.
+            if ($this->readsSession()) {
+                $this->bridge?->revokeToken();
+            }
         } finally {
             $this->forgetUser();
             $this->loggedOut = true;
@@ -319,13 +322,18 @@ final class AccountingGuard implements StatefulGuard
             return $this->token;
         }
 
-        $token = strtolower($this->input) === 'bearer'
-            ? $this->request?->bearerToken()
-            : $this->sessionToken();
+        $token = $this->readsSession()
+            ? $this->sessionToken()
+            : $this->request?->bearerToken();
 
         $token = is_string($token) ? trim($token) : '';
 
         return $this->token = $token === '' ? null : $token;
+    }
+
+    private function readsSession(): bool
+    {
+        return strtolower($this->input) !== 'bearer';
     }
 
     private function sessionToken(): ?string
@@ -773,7 +781,7 @@ final class AccountingGuard implements StatefulGuard
         $this->claimsResolved = true;
         $this->token = null;
 
-        if (strtolower($this->input) !== 'bearer') {
+        if ($this->readsSession()) {
             $this->bridge?->clearToken();
         }
 
