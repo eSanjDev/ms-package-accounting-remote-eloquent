@@ -23,6 +23,8 @@ use Stringable;
  */
 final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
 {
+    private const PER_VALUE_LIMIT = 25;
+
     /**
      * The connection name the rule under validation named, if any.
      */
@@ -115,6 +117,11 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
             return 0;
         }
 
+        // One request per value: a list longer than this is a rule without a max: limit.
+        if (count($wanted) > self::PER_VALUE_LIMIT && $this->checksOneByOne($collection, $field)) {
+            throw UnsupportedValidationRuleException::tooManyValues($collection, $field, count($wanted), self::PER_VALUE_LIMIT);
+        }
+
         $matched = 0;
 
         foreach (array_chunk($wanted, $this->pageSize()) as $chunk) {
@@ -148,6 +155,11 @@ final class RemotePresenceVerifier implements DatabasePresenceVerifierInterface
         }
 
         return $present;
+    }
+
+    private function checksOneByOne(string $collection, string $field): bool
+    {
+        return $field !== $this->probe($collection)->keyName() && ! $this->isDistinctable($collection, $field);
     }
 
     private function transport(): ResourceTransport
