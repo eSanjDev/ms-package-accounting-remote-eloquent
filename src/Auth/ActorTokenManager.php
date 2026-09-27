@@ -318,7 +318,11 @@ final class ActorTokenManager implements ActorTokenProvider
             return;
         }
 
-        $entry = ['token' => $token, 'expires_at' => time() + $usable];
+        $now = time();
+
+        $this->memo = array_filter($this->memo, static fn (array $held): bool => $held['expires_at'] > $now);
+
+        $entry = ['token' => $token, 'expires_at' => $now + $usable];
 
         $this->memo[$cacheKey] = $entry;
         $this->cache?->put($cacheKey, $entry, $usable);
