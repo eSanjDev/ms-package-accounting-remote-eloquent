@@ -11,6 +11,7 @@ use Illuminate\Container\Container;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Support\Carbon;
 use Throwable;
 
 /**
@@ -37,6 +38,8 @@ final class RemoteAccess
     private static ?RateLimitSnapshot $quota = null;
 
     private static ?float $failedAt = null;
+
+    private static ?int $loadedAt = null;
 
     private const RETRY_AFTER_FAILURE_SECONDS = 10;
 
@@ -132,6 +135,7 @@ final class RemoteAccess
         self::$faking = false;
         self::$quota = null;
         self::$failedAt = null;
+        self::$loadedAt = null;
     }
 
     /**
@@ -153,7 +157,7 @@ final class RemoteAccess
             }
         }
 
-        if (self::$resolved) {
+        if (self::$resolved && ! self::expired()) {
             return self::$snapshot ?? AccessSnapshot::unknown();
         }
 
@@ -219,6 +223,8 @@ final class RemoteAccess
             $cached = self::read($cache, $key);
 
             if ($cached !== null) {
+                self::$loadedAt = Carbon::now()->getTimestamp();
+
                 return self::$snapshot = AccessSnapshot::fromArray($cached);
             }
         }
@@ -273,6 +279,7 @@ final class RemoteAccess
 
         self::$rereadUsed = false;
         self::$failedAt = null;
+        self::$loadedAt = Carbon::now()->getTimestamp();
 
         return self::$snapshot = AccessSnapshot::fromArray($data);
     }
@@ -313,6 +320,14 @@ final class RemoteAccess
         $scope = $config instanceof ConfigRepository ? RemoteEloquentServiceProvider::cacheScope($config) . ':' : '';
 
         return (is_string($prefix) ? $prefix : 'esanj:remote_eloquent:') . $scope . 'access';
+    }
+
+    // A long-lived worker keeps this class's state between jobs; the snapshot lives no longer than the shared entry.
+    private static function expired(): bool
+    {
+        $ttl = self::ttl();
+
+        return $ttl > 0 && self::$loadedAt !== null && Carbon::now()->getTimestamp() - self::$loadedAt >= $ttl;
     }
 
     private static function ttl(): int
