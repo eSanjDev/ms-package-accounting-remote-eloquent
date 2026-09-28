@@ -37,7 +37,7 @@ final class RemoteAccess
 
     private static ?RateLimitSnapshot $quota = null;
 
-    private static ?float $failedAt = null;
+    private static ?int $failedAt = null;
 
     private static ?int $loadedAt = null;
 
@@ -161,7 +161,7 @@ final class RemoteAccess
             return self::$snapshot ?? AccessSnapshot::unknown();
         }
 
-        if (self::$failedAt !== null && microtime(true) - self::$failedAt < self::RETRY_AFTER_FAILURE_SECONDS) {
+        if (self::$failedAt !== null && Carbon::now()->getTimestamp() - self::$failedAt < self::RETRY_AFTER_FAILURE_SECONDS) {
             return self::$snapshot ?? AccessSnapshot::unknown();
         }
 
@@ -240,7 +240,7 @@ final class RemoteAccess
             $response = $transport->access();
         } catch (Throwable) {
             self::$resolved = false;
-            self::$failedAt = microtime(true);
+            self::$failedAt = Carbon::now()->getTimestamp();
 
             return self::$snapshot ?? AccessSnapshot::unknown();
         }
@@ -249,7 +249,7 @@ final class RemoteAccess
 
         if (! is_array($data) || $data === []) {
             self::$resolved = false;
-            self::$failedAt = microtime(true);
+            self::$failedAt = Carbon::now()->getTimestamp();
 
             return self::$snapshot ?? AccessSnapshot::unknown();
         }
