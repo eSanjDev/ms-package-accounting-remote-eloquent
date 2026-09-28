@@ -489,31 +489,6 @@ that needed case folding fails loudly here instead of passing on MySQL and faili
 
 ---
 
-## Upgrading to 2.0.3
-
-- **The `accounting` guard refuses to run without an audience.** With neither `auth.client_id` nor `audiences` set it
-  used to accept a token issued to any client; it now throws `RemoteAuthenticationException`.
-- **Logging out of a `bearer` guard no longer revokes the session's own token.**
-- **`remoteCan()` follows `X-Permissions-Version`**, like `RemoteAccess`; it used to keep the first answer for the
-  life of the worker.
-- **`exists` over more than 25 values of a field without `distinct` throws** instead of sending one request per
-  value; limit the list with `max:25`.
-- **The presence verifier resolves the transport per use**, so a `fake()` installed after the validator was built is
-  honoured, and a long-lived worker no longer reuses the first request's transport.
-- **A builder `restore()` throws `UnsupportedQueryException`** with guidance instead of a `BadMethodCallException`.
-
-## Upgrading to 2.0.2
-
-- **Laravel 12 or 13 is required.** 11 is past its security support, and Composer 2.9+ refuses to install any of
-  its releases.
-- **Laravel 13 and the latest 12.x load**: 2.0.1 stopped with a fatal signature error on the first remote query.
-- **A revoked sign-in token makes the user a guest** (with a logged warning) instead of a 500.
-- **A job run with `dispatchSync()` keeps its caller's actor and Idempotency-Keys**, so a retried outer job no
-  longer re-applies the writes it made after the inner one.
-- **`http://` is refused outside `local`/`testing`** for `actor.exchange_url` and a guard's `jwks_url` too, and
-  for `auth.token_url` however the token provider is resolved.
-- **`count('column')` throws** instead of silently counting every row; write `->whereNotNull('column')->count()`.
-
 ## Further reading
 
 [`docs/GUIDE.md`](docs/GUIDE.md) — the long version: the QuerySpec itself, every refusal with a worked
