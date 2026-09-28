@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Esanj\RemoteEloquent\Auth;
 
 use Closure;
+use Esanj\AuthBridge\Contracts\AccountingIdentity;
 use Esanj\AuthBridge\Contracts\AuthBridgeServiceInterface;
 use Esanj\RemoteEloquent\Contracts\ActorTokenProvider;
 use Esanj\RemoteEloquent\Exceptions\RemoteAuthenticationException;
@@ -87,7 +88,7 @@ final class ActorTokenManager implements ActorTokenProvider
             return null;
         }
 
-        $identifier = $user->getAuthIdentifier();
+        $identifier = $this->accountingId($user);
 
         if ($identifier === null || (string)$identifier === '') {
             throw RemoteAuthenticationException::actorExchangeFailed(
@@ -134,7 +135,7 @@ final class ActorTokenManager implements ActorTokenProvider
 
     public function forget(?Authenticatable $user): void
     {
-        $identifier = $user?->getAuthIdentifier();
+        $identifier = $user === null ? null : $this->accountingId($user);
 
         if ($identifier === null || (string)$identifier === '') {
             return;
@@ -151,6 +152,12 @@ final class ActorTokenManager implements ActorTokenProvider
         $key = $this->cacheKey($subject, (string)$identifier);
 
         unset($this->memo[$key]);
+    }
+
+    // A local user keyed differently from its Accounting account (a manager) says which account it is.
+    private function accountingId(Authenticatable $user): mixed
+    {
+        return $user instanceof AccountingIdentity ? $user->accountingId() : $user->getAuthIdentifier();
     }
 
     /**
