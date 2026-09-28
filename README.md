@@ -421,6 +421,10 @@ public function middleware(): array
 Turn rendering off with `REMOTE_ELOQUENT_RENDER_ERRORS=false` and every `render()` returns null, leaving your own
 handler in control.
 
+`RemoteRateLimited` releases jobs only when they have an asynchronous queue job attached. With `dispatchSync()`,
+the `sync` connection, or no queue job, it rethrows the 429 so the caller can handle the failure. Those execution
+paths cannot schedule a released job for a later attempt.
+
 ---
 
 ## Testing
