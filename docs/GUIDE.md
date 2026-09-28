@@ -167,7 +167,7 @@ services sharing a cache store never read each other's.
 | `limits.in_chunk` | 500 | The longest `in` list one request may carry. A longer `whereIn()` is split and merged; a list that cannot be split is refused with the reason. |
 | `cache.identity_map` | `true` | Per-request memo of records fetched by id. |
 | `cache.find_ttl` | 0 | Records are **not** cached across requests, on purpose. |
-| `cache.schema_ttl` / `cache.access_ttl` | 3600 / 600 s | The descriptive endpoints. |
+| `cache.schema_ttl` / `cache.access_ttl` | 3600 / 600 s | The descriptive endpoints. `access_ttl` also bounds a long-lived worker's in-process permissions copy. |
 | `errors.render` | `true` | Let the package's exceptions answer the browser. |
 | `telemetry.call_warning_threshold` | 20 | Warn once a request passes this many remote calls. |
 | `fallback` | `false` | Not configurable. See §1. |

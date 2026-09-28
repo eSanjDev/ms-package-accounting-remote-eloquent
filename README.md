@@ -483,7 +483,7 @@ that needed case folding fails loudly here instead of passing on MySQL and faili
 | `rest.timeout` / `rest.connect_timeout` | 5 / 2 s | Short on purpose. Waiting 30 seconds for an answer that is not coming turns a fast failure into a slow one. |
 | `cache.identity_map` | true | Per-request memo, so resolving the same id twice is one call. Never shared between requests. |
 | `cache.find_ttl` | 0 | Records are **not** cached across requests. Accounting is the system of record for balances and permissions. |
-| `cache.schema_ttl` / `cache.access_ttl` | 3600 / 600 s | The two descriptive endpoints. Both are dropped early when a response reports a new `X-Schema-Version` or `X-Permissions-Version`. A schema that cannot be refreshed is served stale for up to 24 × `schema_ttl`. |
+| `cache.schema_ttl` / `cache.access_ttl` | 3600 / 600 s | The two descriptive endpoints. Both are dropped early when a response reports a new `X-Schema-Version` or `X-Permissions-Version`. A schema that cannot be refreshed is served stale for up to 24 × `schema_ttl`. A queue worker's in-process permissions copy expires with `access_ttl` too. |
 | `telemetry.call_warning_threshold` | 20 | Log a warning once one request has made this many remote calls — that is the N+1 that used to be a join. |
 | `fallback` | false | Not configurable. v1 replayed failed calls on a second transport and re-sent accepted writes. |
 
