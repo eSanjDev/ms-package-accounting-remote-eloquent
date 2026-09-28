@@ -223,7 +223,7 @@ final class RemoteAccess
             $cached = self::read($cache, $key);
 
             if ($cached !== null) {
-                self::$loadedAt = Carbon::now()->getTimestamp();
+                self::$loadedAt = is_int($cached['fetched_at'] ?? null) ? $cached['fetched_at'] : Carbon::now()->getTimestamp();
 
                 return self::$snapshot = AccessSnapshot::fromArray($cached);
             }
@@ -268,10 +268,11 @@ final class RemoteAccess
         }
 
         $ttl = self::ttl();
+        $fetchedAt = Carbon::now()->getTimestamp();
 
         if ($cache !== null && $ttl > 0) {
             try {
-                $cache->put($key, $data, $ttl);
+                $cache->put($key, $data + ['fetched_at' => $fetchedAt], $ttl);
             } catch (Throwable) {
                 // A cache that cannot be written costs another request later, and nothing else.
             }
@@ -279,7 +280,7 @@ final class RemoteAccess
 
         self::$rereadUsed = false;
         self::$failedAt = null;
-        self::$loadedAt = Carbon::now()->getTimestamp();
+        self::$loadedAt = $fetchedAt;
 
         return self::$snapshot = AccessSnapshot::fromArray($data);
     }
