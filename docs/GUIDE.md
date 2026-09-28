@@ -731,6 +731,10 @@ default guard is picked up on every write (and on `validateRemote()`, which pres
 it), their token is exchanged for a short-lived actor token, and it is sent as `Actor-Authorization`
 automatically. An actor token is good for exactly one write, so it is exchanged again for the next one.
 
+The actor has to be the account the signed-in token names. A local user whose primary key is not its Accounting id
+says which account it stands for by implementing `Esanj\AuthBridge\Contracts\AccountingIdentity`; the `Manager`
+model of `esanj/managers` does, so a write from the manager panel acts as that manager's Accounting account.
+
 `GET users/me` (`ApiUser::me()` and the `accounting` guard) is different: it is answered with the user's **own**
 access token in `Authorization`, not with an actor token.
 
