@@ -34,7 +34,9 @@ final class RemoteRateLimited
         try {
             return $next($job);
         } catch (RateLimitedException $exception) {
-            if (! method_exists($job, 'release')) {
+            $queued = $job->job ?? null;
+
+            if (! $queued instanceof QueuedJob || $queued instanceof SyncJob || ! method_exists($job, 'release')) {
                 throw $exception;
             }
 
