@@ -311,10 +311,15 @@ final class ApiQueryBuilder extends BaseQueryBuilder
     {
         $this->applyBeforeQueryCallbacks();
 
+        if ($this->limit !== null && (int) $this->limit === 0) {
+            return false;
+        }
+
         $probe = clone $this;
         $probe->columns = [$this->keyName];
         $probe->limit = 1;
-        $probe->offset = null;
+        // Whether a row sits past the offset does not depend on the order, so the offset stays and the order goes.
+        $probe->offset = $this->offset !== null && (int) $this->offset > 0 ? (int) $this->offset : null;
         $probe->orders = null;
         $probe->includes = [];
         $probe->counts = [];
@@ -324,6 +329,14 @@ final class ApiQueryBuilder extends BaseQueryBuilder
 
         if ($oversized === null) {
             return $probe->send($probe->toQuerySpec()) !== [];
+        }
+
+        if ($probe->offset !== null) {
+            throw UnsupportedQueryException::method(
+                'exists() with an offset over a list longer than one request',
+                sprintf('The list goes out in pieces of %d, and an offset cannot be applied piece by piece. Narrow the list, or drop the offset.', $probe->listCap()),
+                $this->context(['builder_method' => 'exists', 'value_count' => count($oversized[1])]),
+            );
         }
 
         foreach (array_chunk($oversized[1], $probe->listCap()) as $chunk) {
